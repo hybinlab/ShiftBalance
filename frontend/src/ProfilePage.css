@@ -1,0 +1,40 @@
+.profile-page { max-width: 1180px; }
+.profile-page .page-heading { margin-bottom: 18px; }
+.profile-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.profile-panel.surface,
+.profile-logout.surface { border: 1px solid #e2e9f2; box-shadow: none; }
+.profile-panel .ant-card-head { min-height: 50px; }
+.profile-panel .ant-card-head-title { color: #34445c; font-size: 14px; font-weight: 600; }
+.profile-panel .ant-card-body { padding: 20px; }
+.profile-avatar-row { display: flex; align-items: center; gap: 16px; padding-bottom: 20px; border-bottom: 1px solid #edf0f5; }
+.profile-avatar-row .ant-avatar { flex: 0 0 auto; color: #4777bc; background: #eaf2ff; font-size: 24px; }
+.profile-avatar-copy { display: grid; justify-items: start; gap: 6px; min-width: 0; }
+.profile-avatar-copy strong { color: #2e4058; font-size: 15px; font-weight: 600; }
+.profile-avatar-copy > span,
+.profile-form-section > p,
+.profile-password-intro { color: #77869b; font-size: 12px; line-height: 1.6; }
+.profile-file-input { display: none; }
+.profile-avatar-copy .ant-btn { height: 32px; margin-top: 3px; }
+.profile-form-section { padding-top: 19px; }
+.profile-form-section h2 { margin: 0 0 5px; color: #34445c; font-size: 14px; font-weight: 600; }
+.profile-form-section > p { margin: 0 0 16px; }
+.profile-panel .ant-form-item { margin-bottom: 15px; }
+.profile-panel .ant-form-item-label > label { height: auto; color: #4f5e73; font-size: 12px; }
+.profile-panel .ant-input-affix-wrapper,
+.profile-panel .ant-input { min-height: 36px; }
+.profile-password-intro { margin: 0 0 20px; }
+.profile-logout.surface { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 14px; padding: 16px 20px; }
+.profile-logout .ant-card-body { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 18px; padding: 0; }
+.profile-logout > div { display: flex; flex-direction: column; gap: 4px; }
+.profile-logout strong { color: #3b4b61; font-size: 13px; }
+.profile-logout span { color: #8290a3; font-size: 12px; }
+
+@media (max-width: 760px) {
+  .profile-grid { grid-template-columns: minmax(0, 1fr); }
+  .profile-panel .ant-card-body { padding: 16px; }
+}
+
+@media (max-width: 520px) {
+  .profile-logout .ant-card-body { align-items: flex-start; flex-direction: column; }
+  .profile-logout .ant-btn { min-height: 40px; }
+}

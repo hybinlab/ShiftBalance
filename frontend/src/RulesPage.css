@@ -1,0 +1,31 @@
+.rules-page { display: grid; gap: 14px; }
+.rules-page .rules-content { display: grid; gap: 14px; }
+.rules-page .ant-tabs-nav { margin-bottom: 14px; }
+.rules-cycle-card.ant-card > .ant-card-body { display: grid; gap: 14px; }
+.rules-cycle-controls { display: grid; grid-template-columns: minmax(190px, .8fr) minmax(170px, .7fr) minmax(260px, 1.5fr); align-items: end; gap: 14px; }
+.rules-cycle-controls label { display: grid; gap: 6px; color: #65738a; font-size: 12px; }
+.rules-cycle-summary { display: grid; gap: 5px; min-height: 56px; align-content: center; padding: 8px 12px; border-radius: 8px; background: #f3f7ff; }
+.rules-cycle-summary strong { color: #2c68ba; font-size: 13px; }
+.rules-cycle-summary small { color: #7b8aa1; font-size: 11px; }
+.rules-cycle-card .ant-alert { border-radius: 8px; }
+.rules-table-card.ant-card > .ant-card-body { padding-top: 8px; }
+.rules-table-intro { display: flex; justify-content: space-between; gap: 12px; margin: 0 0 10px; color: #78869b; font-size: 11px; }
+.rules-table-card .ant-select { width: 100%; }
+.rules-table-card .ant-input-number { width: 96px; }
+.rules-table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 13px 0 10px; color: #53627a; font-size: 12px; }
+.rules-exception-card.ant-card > .ant-card-body { padding: 15px; }
+.rules-exception-alert { margin-bottom: 12px; }
+.rules-exception-card .ant-select { width: 100%; }
+.rules-exception-card .ant-input-number { width: 96px; }
+.rules-footnotes { display: grid; gap: 6px; margin-top: 10px; color: #7b899e; font-size: 11px; }
+.rules-footnotes .ant-tag { margin-inline-end: 5px; }
+
+@media (max-width: 760px) {
+  .rules-cycle-controls { grid-template-columns: 1fr; align-items: stretch; }
+  .rules-cycle-controls .ant-picker,.rules-cycle-controls .ant-select { width: 100%; }
+  .rules-table-intro { flex-direction: column; gap: 4px; }
+  .rules-table-card > .ant-card-head { align-items: flex-start; }
+  .rules-table-toolbar { align-items: flex-start; flex-direction: column; }
+  .rules-table-toolbar > .ant-space { flex-wrap: wrap; }
+  .rules-exception-card > .ant-card-head { align-items: flex-start; }
+}

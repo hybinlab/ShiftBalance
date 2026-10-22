@@ -35,16 +35,20 @@ public class PersonnelService {
     }
 
     public List<GroupView> groups() {
-        return jdbc.query("SELECT code, name FROM staff_group WHERE enabled ORDER BY code",
-                (rs, rowNum) -> new GroupView(rs.getString("code"), rs.getString("name")));
+        return jdbc.query("SELECT id, code, name FROM staff_group WHERE enabled ORDER BY code",
+                (rs, rowNum) -> new GroupView(rs.getLong("id"), rs.getString("code"), rs.getString("name")));
     }
 
     public List<PositionView> positions() {
-        return jdbc.query("SELECT code, name FROM job_position WHERE enabled ORDER BY code",
-                (rs, rowNum) -> new PositionView(rs.getString("code"), rs.getString("name")));
+        return jdbc.query("SELECT id, code, name FROM job_position WHERE enabled ORDER BY code",
+                (rs, rowNum) -> new PositionView(rs.getLong("id"), rs.getString("code"), rs.getString("name")));
     }
 
     public List<PersonView> people(LocalDate asOf) {
+        return people(asOf, Set.of());
+    }
+
+    public List<PersonView> people(LocalDate asOf, Set<LocalDate> excludedScheduleDates) {
         LocalDate date = asOf == null ? LocalDate.now(BUSINESS_ZONE) : asOf;
         List<PersonRow> people = jdbc.query("""
                         SELECT p.id, p.name, p.enabled, p.remark, g.code AS group_code
@@ -61,6 +65,7 @@ public class PersonnelService {
 
         List<Long> ids = people.stream().map(PersonRow::id).toList();
         String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        String excludedDatePlaceholders = String.join(",", java.util.Collections.nCopies(excludedScheduleDates.size(), "?"));
         Object[] idsAndDate = append(ids, date, date);
 
         Map<Long, Set<String>> qualifications = new HashMap<>();
@@ -77,16 +82,53 @@ public class PersonnelService {
 
         Map<Long, Map<String, Integer>> historicalCounts = new HashMap<>();
         jdbc.query("""
-                        SELECT sa.person_id, jp.code, COUNT(*) AS assignment_count
+                        SELECT sa.person_id, jp.code, COUNT(DISTINCT sa.id) AS assignment_count
                         FROM schedule_assignment sa
-                        JOIN schedule s ON s.id = sa.schedule_id AND s.status = 'PUBLISHED'
+                        JOIN schedule s ON s.id = sa.schedule_id
+                            AND s.status = 'PUBLISHED'
+                            AND s.version = (SELECT MAX(latest.version) FROM schedule latest
+                                             WHERE latest.schedule_date = s.schedule_date
+                                               AND latest.status = 'PUBLISHED')
                         JOIN job_position jp ON jp.id = sa.position_id
+                        JOIN staff_group assigned_group ON assigned_group.id = sa.group_id_snapshot
+                        JOIN group_membership current_group ON current_group.person_id = sa.person_id
+                                                                  AND current_group.group_id = sa.group_id_snapshot
+                        JOIN LATERAL jsonb_to_recordset(
+                            CASE WHEN jsonb_typeof(s.configuration_snapshot->'requirements') = 'array'
+                                 THEN s.configuration_snapshot->'requirements' ELSE '[]'::jsonb END
+                        ) AS requirement("slotCode" TEXT, "positionCode" TEXT, "groupCode" TEXT,
+                                         "minCount" INTEGER, "maxCount" INTEGER) ON TRUE
                         WHERE sa.person_id IN (%s)
+                          %s
+                          AND current_group.effective_from <= ?
+                          AND (current_group.effective_to IS NULL OR current_group.effective_to > ?)
+                          AND EXISTS (
+                              SELECT 1 FROM group_membership historical_group
+                              WHERE historical_group.person_id = sa.person_id
+                                AND historical_group.group_id = sa.group_id_snapshot
+                                AND historical_group.effective_from <= s.schedule_date
+                                AND (historical_group.effective_to IS NULL OR historical_group.effective_to > s.schedule_date)
+                          )
+                          AND requirement."slotCode" = sa.time_slot_code
+                          AND requirement."positionCode" = jp.code
+                          AND requirement."groupCode" = assigned_group.code
+                          AND (COALESCE(requirement."minCount", 0) > 0
+                               OR requirement."maxCount" IS NULL
+                               OR requirement."maxCount" > 0
+                               OR jp.code = 'TERMINAL')
+                          AND (jp.code = 'TERMINAL' OR EXISTS (
+                              SELECT 1 FROM person_qualification pq
+                              WHERE pq.person_id = sa.person_id AND pq.position_id = sa.position_id
+                                AND pq.effective_from <= s.schedule_date
+                                AND (pq.effective_to IS NULL OR pq.effective_to > s.schedule_date)
+                          ))
                         GROUP BY sa.person_id, jp.code
                         ORDER BY sa.person_id, jp.code
-                        """.formatted(placeholders),
+                        """.formatted(placeholders, excludedScheduleDates.isEmpty() ? "" :
+                        "AND s.schedule_date NOT IN (" + excludedDatePlaceholders + ")"),
                 (RowCallbackHandler) rs -> historicalCounts.computeIfAbsent(rs.getLong("person_id"), ignored -> new LinkedHashMap<>())
-                        .put(rs.getString("code"), Math.toIntExact(rs.getLong("assignment_count"))), ids.toArray());
+                        .put(rs.getString("code"), Math.toIntExact(rs.getLong("assignment_count"))),
+                append(ids, excludedScheduleDates, date, date));
 
         return people.stream().map(person -> new PersonView(
                         Long.toString(person.id()),
@@ -195,21 +237,31 @@ public class PersonnelService {
     }
 
     private void updateQualifications(long personId, Set<String> positionCodes, LocalDate effectiveDate) {
-        Set<Long> desiredPositionIds = new LinkedHashSet<>();
-        for (String code : positionCodes) {
-            desiredPositionIds.add(lookupEnabledId("job_position", code, "岗位"));
-        }
-
         List<QualificationRow> activeQualifications = jdbc.query("""
-                        SELECT id, position_id, effective_from
-                        FROM person_qualification
-                        WHERE person_id = ? AND effective_from <= ?
-                          AND (effective_to IS NULL OR effective_to > ?)
-                        ORDER BY position_id, effective_from
+                        SELECT pq.id, pq.position_id, jp.code, pq.effective_from
+                        FROM person_qualification pq
+                        JOIN job_position jp ON jp.id = pq.position_id
+                        WHERE pq.person_id = ? AND pq.effective_from <= ?
+                          AND (pq.effective_to IS NULL OR pq.effective_to > ?)
+                        ORDER BY pq.position_id, pq.effective_from
                         """,
                 (rs, rowNum) -> new QualificationRow(rs.getLong("id"), rs.getLong("position_id"),
-                        rs.getObject("effective_from", LocalDate.class)),
+                        rs.getString("code"), rs.getObject("effective_from", LocalDate.class)),
                 personId, effectiveDate, effectiveDate);
+        Map<String, QualificationRow> activeByCode = new LinkedHashMap<>();
+        for (QualificationRow qualification : activeQualifications) {
+            activeByCode.put(qualification.positionCode(), qualification);
+        }
+
+        Set<Long> desiredPositionIds = new LinkedHashSet<>();
+        for (String code : positionCodes) {
+            QualificationRow current = activeByCode.get(code);
+            // Preserve an existing qualification for a now-disabled position, but don't allow new assignments to it.
+            desiredPositionIds.add(current == null
+                    ? lookupEnabledId("job_position", code, "岗位")
+                    : current.positionId());
+        }
+
         Set<Long> activePositionIds = new LinkedHashSet<>();
         for (QualificationRow qualification : activeQualifications) {
             activePositionIds.add(qualification.positionId());
@@ -253,6 +305,14 @@ public class PersonnelService {
         return values.toArray();
     }
 
+    private static Object[] append(List<Long> ids, Set<LocalDate> excludedScheduleDates, LocalDate asOf, LocalDate asOfAgain) {
+        List<Object> values = new ArrayList<>(ids);
+        values.addAll(excludedScheduleDates);
+        values.add(asOf);
+        values.add(asOfAgain);
+        return values.toArray();
+    }
+
     private static ResponseStatusException badRequest(String message) {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
     }
@@ -270,5 +330,5 @@ public class PersonnelService {
 
     private record GroupMembershipRow(long id, long groupId, LocalDate effectiveFrom) {}
 
-    private record QualificationRow(long id, long positionId, LocalDate effectiveFrom) {}
+    private record QualificationRow(long id, long positionId, String positionCode, LocalDate effectiveFrom) {}
 }

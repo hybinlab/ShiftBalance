@@ -1,5 +1,7 @@
 package com.shiftbalance.schedule;
 
+import com.shiftbalance.requirement.RequirementDtos.RequirementView;
+
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -26,6 +28,34 @@ public final class ScheduleDtos {
 
     public record GenerateFromDatabaseRequest(@NotNull LocalDate scheduleDate) {}
 
+    public record GenerateWorkPeriodResponse(
+            LocalDate workPeriodStartDate,
+            LocalDate workPeriodEndDate,
+            String status,
+            List<WorkPeriodDayResult> days,
+            List<String> messages) {}
+
+    public record WorkPeriodDayResult(
+            LocalDate scheduleDate,
+            List<RequirementView> requirements,
+            GenerateResponse schedule) {}
+
+    public record EditScheduleRequest(
+            @NotEmpty List<@Valid ScheduleEditAssignment> assignments,
+            List<@Valid PowerBankDutyEdit> powerBankDuties) {}
+
+    public record ScheduleEditAssignment(
+            @NotBlank String slotCode,
+            @NotBlank String positionCode,
+            @NotBlank String groupCode,
+            @NotNull List<@NotBlank String> personIds,
+            String terminalSupervisorId) {}
+
+    public record PowerBankDutyEdit(
+            @NotBlank String direction,
+            @NotBlank String groupCode,
+            @NotBlank String personId) {}
+
     public record StaffMember(
             @NotBlank String id,
             @NotBlank String name,
@@ -45,7 +75,8 @@ public final class ScheduleDtos {
             @NotBlank String positionName,
             @NotBlank String groupCode,
             @Min(0) int minCount,
-            @PositiveOrZero Integer maxCount) {}
+            @PositiveOrZero Integer maxCount,
+            String fixedPersonId) {}
 
     public record GenerateResponse(
             LocalDate scheduleDate,
@@ -54,20 +85,60 @@ public final class ScheduleDtos {
             List<String> messages,
             List<PositionFairness> fairness,
             Long scheduleId,
-            Integer version) {
+            Integer version,
+            List<PowerBankDuty> powerBankDuties) {
         public GenerateResponse(
                 LocalDate scheduleDate,
                 String status,
                 List<Assignment> assignments,
                 List<String> messages,
                 List<PositionFairness> fairness) {
-            this(scheduleDate, status, assignments, messages, fairness, null, null);
+            this(scheduleDate, status, assignments, messages, fairness, null, null, List.of());
+        }
+
+        public GenerateResponse(
+                LocalDate scheduleDate,
+                String status,
+                List<Assignment> assignments,
+                List<String> messages,
+                List<PositionFairness> fairness,
+                Long scheduleId,
+                Integer version) {
+            this(scheduleDate, status, assignments, messages, fairness, scheduleId, version, List.of());
         }
 
         public GenerateResponse withSchedule(long id, int scheduleVersion) {
-            return new GenerateResponse(scheduleDate, status, assignments, messages, fairness, id, scheduleVersion);
+            return new GenerateResponse(scheduleDate, status, assignments, messages, fairness,
+                    id, scheduleVersion, powerBankDuties);
+        }
+
+        public GenerateResponse withPowerBankDuties(List<PowerBankDuty> duties) {
+            return new GenerateResponse(scheduleDate, status, assignments, messages, fairness,
+                    scheduleId, version, List.copyOf(duties));
         }
     }
+
+    public record ScheduleResponse(
+            long scheduleId,
+            LocalDate scheduleDate,
+            String status,
+            int version,
+            List<Assignment> assignments,
+            List<PowerBankDuty> powerBankDuties) {}
+
+    public record ScheduleCalendarEntry(
+            long scheduleId,
+            LocalDate scheduleDate,
+            String status,
+            int version,
+            List<StaffingRequirement> requirements) {}
+
+    public record PowerBankDuty(
+            String direction,
+            String slotCode,
+            String groupCode,
+            String personId,
+            String personName) {}
 
     public record Assignment(
             String slotCode,
@@ -76,9 +147,14 @@ public final class ScheduleDtos {
             String positionCode,
             String positionName,
             String groupCode,
+            String fixedPersonId,
             List<PersonSummary> people) {}
 
-    public record PersonSummary(String id, String name) {}
+    public record PersonSummary(String id, String name, boolean terminalSupervisor) {
+        public PersonSummary(String id, String name) {
+            this(id, name, false);
+        }
+    }
 
     public record PositionFairness(
             String groupCode,

@@ -1,0 +1,15 @@
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS app_user (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    username VARCHAR(100) NOT NULL UNIQUE CHECK (username = lower(username)),
+    password_hash VARCHAR(100) NOT NULL,
+    display_name VARCHAR(100) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+GRANT SELECT, INSERT ON TABLE app_user TO shiftbalance;
+GRANT USAGE, SELECT ON SEQUENCE app_user_id_seq TO shiftbalance;
+
+COMMIT;

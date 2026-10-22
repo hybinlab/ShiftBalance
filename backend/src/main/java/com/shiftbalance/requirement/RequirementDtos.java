@@ -25,7 +25,8 @@ public final class RequirementDtos {
             @NotBlank String positionCode,
             @NotNull GroupRole groupRole,
             @Min(0) int minCount,
-            @PositiveOrZero Integer maxCount) {}
+            @PositiveOrZero Integer maxCount,
+            String fixedPersonId) {}
 
     public enum GroupRole { EARLY_DOWN, LATE_DOWN }
 
@@ -39,7 +40,8 @@ public final class RequirementDtos {
             @NotBlank String positionCode,
             @NotBlank String groupCode,
             @Min(0) int minCount,
-            @PositiveOrZero Integer maxCount) {}
+            @PositiveOrZero Integer maxCount,
+            String fixedPersonId) {}
 
     public record RequirementView(
             LocalDate scheduleDate,
@@ -48,5 +50,6 @@ public final class RequirementDtos {
             String positionName,
             String groupCode,
             int minCount,
-            Integer maxCount) {}
+            Integer maxCount,
+            String fixedPersonId) {}
 }

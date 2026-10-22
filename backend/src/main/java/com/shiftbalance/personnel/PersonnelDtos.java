@@ -14,9 +14,9 @@ import com.shiftbalance.schedule.ScheduleDtos.StaffMember;
 public final class PersonnelDtos {
     private PersonnelDtos() {}
 
-    public record GroupView(String code, String name) {}
+    public record GroupView(long id, String code, String name) {}
 
-    public record PositionView(String code, String name) {}
+    public record PositionView(long id, String code, String name) {}
 
     public record PersonView(
             String id,

@@ -111,6 +111,7 @@ CREATE TABLE schedule_assignment (
     position_id BIGINT NOT NULL REFERENCES job_position(id),
     time_slot_code VARCHAR(40) NOT NULL REFERENCES time_slot(code),
     group_id_snapshot BIGINT NOT NULL REFERENCES staff_group(id),
+    terminal_supervisor BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE (schedule_id, person_id, time_slot_code)
 );
 
