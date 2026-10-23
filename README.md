@@ -56,6 +56,7 @@ DB_FILES=(
   migration_v9_power_bank_rotation.sql
   migration_v10_auth_users.sql
   migration_v11_user_profile.sql
+  migration_v12_overnight_parallel_assignment.sql
 )
 for file in "${DB_FILES[@]}"; do
   psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d shiftbalance -v ON_ERROR_STOP=1 -f "src/main/resources/db/$file" || exit 1

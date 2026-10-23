@@ -695,6 +695,9 @@
 .meal-duty { display: flex; align-items: flex-start; gap: 3px; padding: 1px 0; }
 .meal-duty .chip-list { justify-content: flex-start; gap: 3px; }
 .meal-duty .add-person-control { justify-content: flex-start; }
+.overnight-inline { display: flex; align-items: flex-start; gap: 4px; }
+.overnight-inline > .ant-tag { flex: 0 0 auto; margin: 2px 0 0; }
+.overnight-inline .chip-list { justify-content: flex-start; }
 .schedule-table .ant-empty { margin-block: 28px; }
 .schedule-table .ant-empty-description { color: #66758b; }
 .person-chip.ant-tag { max-width: 100%; min-height: 22px; display: inline-flex; align-items: center; gap: 4px; margin: 0; padding: 1px 5px 1px 3px; border: 1px solid transparent; border-radius: 6px; font-size: 11px; line-height: 1.2; white-space: nowrap; }

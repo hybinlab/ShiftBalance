@@ -17,8 +17,11 @@ psql 'postgresql://shiftbalance@192.168.31.5:5432/shiftbalance' -v ON_ERROR_STOP
 psql 'postgresql://shiftbalance@192.168.31.5:5432/shiftbalance' -v ON_ERROR_STOP=1 -f src/main/resources/db/migration_v9_power_bank_rotation.sql
 psql 'postgresql://shiftbalance@192.168.31.5:5432/shiftbalance' -v ON_ERROR_STOP=1 -f src/main/resources/db/migration_v10_auth_users.sql
 psql 'postgresql://shiftbalance@192.168.31.5:5432/shiftbalance' -v ON_ERROR_STOP=1 -f src/main/resources/db/migration_v11_user_profile.sql
+psql 'postgresql://shiftbalance@192.168.31.5:5432/shiftbalance' -v ON_ERROR_STOP=1 -f src/main/resources/db/migration_v12_overnight_parallel_assignment.sql
 
 Migration v8 adds nullable fixed-person references to standard and date-specific staffing rules. It was applied to the shared PostgreSQL database on 2026-10-22. The application does not run schema migrations on startup.
+
+Migration v12 allows a person to hold one formal post and the independent overnight duty in the same time slot. It is included for existing databases; new databases already get the updated constraint from `schema_v1.sql`.
 ```
 
 Migration v10 adds the application login table and its database grants. It was applied to the shared PostgreSQL database on 2026-10-23. The initial administrator is created from `backend/.env.local` only while the user table is empty. Later restarts do not recreate the configured username after it has been changed, or reset an existing password.
@@ -85,6 +88,8 @@ Create a person with `POST /api/people`; `effectiveFrom` records when the group 
 `POST /api/rotation/next` remains a stateless helper for callers that need to calculate one rotation step. Database-backed generation uses the saved template anchor and does not require a daily rotation call.
 
 Database-backed generation also assigns the independent `推电宝` task for each workday: that day's early-down group takes one person for the morning return, and that day's late-down group takes one person for the 19:30 warehouse trip. It rotates independently within each group using published schedules as history. These duties are stored separately, do not consume formal staffing or qualification counts, and appear as `powerBankDuties` in saved schedule responses. Apply `migration_v9_power_bank_rotation.sql` to an existing database before using this feature; it was applied to the shared PostgreSQL database on 2026-10-23.
+
+Overnight is also an additional duty: the overnight assignee can still fill one regular post during the 19:30 shift. The overnight row remains separately editable and is shown alongside the evening staffing row. Existing databases need `migration_v12_overnight_parallel_assignment.sql` for storage to allow both assignments.
 
 ## Request example
 

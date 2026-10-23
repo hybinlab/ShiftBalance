@@ -91,6 +91,8 @@ X-CSRF-TOKEN: <csrfToken>
 
 生成和发布是两个步骤。页面的周期生成接口会把可行结果保存为 `CANDIDATE`（待发布），此时可以人工调整，但不进入历史统计或公平性基数。确认后调用 `POST /api/schedules/{scheduleId}/publish`，状态变为 `PUBLISHED`，从此计入统计和后续排班公平性计算；已发布版本不能直接编辑。如需修改，生成新的待发布版本，发布新版本时系统会把同一工作日先前的发布版本标记为 `CANCELLED`，避免重复计数。在新版本发布前，旧的已发布版本仍是该工作日的统计依据。`POST /api/schedules/generate` 只求解并返回结果，不保存。
 
+过夜属于附加职责，不占用当晚正式岗位名额；同一人员可以在 `NIGHT_UNTIL_END` 同时安排一个正式岗位和 `OVERNIGHT`。推电宝存于独立任务表，也不占用正式岗位名额。已有数据库需应用 `migration_v12_overnight_parallel_assignment.sql` 才能保存同一人员的过夜与正式岗位记录。
+
 ## 组别、岗位与时段
 
 `GET /api/groups` 和 `GET /api/positions` 返回数组，元素包含 `id`、`code`、`name`。`id` 可用于统计接口筛选。岗位编码为：`MEAL` 打饭、`OVERNIGHT` 过夜、`BOMB` 防爆、`TERMINAL` 候机楼、`MEZZANINE` 夹层、`FLOW` 回流/拉包。历史 `LEADER` 编码已停用；负责人从候机楼已排人员中标记，不单独占岗位名额。

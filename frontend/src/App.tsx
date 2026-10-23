@@ -217,7 +217,7 @@ function displayDate(date: string, options: Intl.DateTimeFormatOptions = {}) {
 function uniquePeople(assignments: Assignment[], slotCode: string) {
   const used = new Set<string>()
   assignments
-    .filter((assignment) => assignment.slotCode === slotCode)
+    .filter((assignment) => assignment.slotCode === slotCode && assignment.positionCode !== 'OVERNIGHT')
     .forEach((assignment) => assignment.personIds.forEach((id) => used.add(id)))
   return used
 }
@@ -359,18 +359,19 @@ function Icon({ name, size = 19 }: { name: string; size?: number }) {
 
 function validateAssignments(assignments: Assignment[], people: Person[]) {
   const errors: string[] = []
-  const allIdsBySlot = new Set<string>()
+  const staffingIdsBySlot = new Set<string>()
+  const overnightIdsBySlot = new Set<string>()
   const flowIds = new Set<string>()
   const supervisorIds = new Set<string>()
-  const fixedPersonIds = new Set(assignments.map((item) => item.fixedPersonId).filter((id): id is string => Boolean(id)))
   for (const assignment of assignments) {
     const count = assignment.personIds.length
     if (count < assignment.minCount) errors.push(`${assignment.slotLabel} · ${assignment.positionName} 至少需要 ${assignment.minCount} 人`)
     if (assignment.maxCount !== null && count > assignment.maxCount) errors.push(`${assignment.slotLabel} · ${assignment.positionName} 最多 ${assignment.maxCount} 人`)
     for (const id of assignment.personIds) {
       const key = `${assignment.slotCode}:${id}`
-      if (allIdsBySlot.has(key)) errors.push(`${assignment.slotLabel} 有人员重复上岗`)
-      allIdsBySlot.add(key)
+      const assignedIds = assignment.positionCode === 'OVERNIGHT' ? overnightIdsBySlot : staffingIdsBySlot
+      if (assignedIds.has(key)) errors.push(`${assignment.slotLabel} 有人员重复上岗`)
+      assignedIds.add(key)
       const person = people.find((item) => item.id === id)
       if (!person || !person.enabled) {
         errors.push(`人员 ${person?.name ?? id} 已停用或不在当天人员列表中`)
@@ -379,7 +380,10 @@ function validateAssignments(assignments: Assignment[], people: Person[]) {
       if (person && ((person.groupCode !== assignment.groupCode && id !== assignment.fixedPersonId) || (!person.qualifiedPositionCodes.includes(assignment.positionCode) && assignment.positionCode !== 'TERMINAL'))) {
         errors.push(`${person.name} 不符合 ${assignment.positionName} 的组别或资格要求`)
       }
-      if (fixedPersonIds.has(id) && id !== assignment.fixedPersonId) {
+      const fixedElsewhere = assignments.some((item) => item.fixedPersonId === id && item !== assignment
+        && !(item.slotCode === assignment.slotCode
+          && (item.positionCode === 'OVERNIGHT' || assignment.positionCode === 'OVERNIGHT')))
+      if (fixedElsewhere && id !== assignment.fixedPersonId) {
         errors.push(person.name + ' 只能安排在其固定时段和岗位')
       }
       if (assignment.positionCode === 'FLOW') {
@@ -405,14 +409,16 @@ function validateAssignments(assignments: Assignment[], people: Person[]) {
       .filter((item) => item.fixedPersonId)
       .forEach((item) => {
         const pinned = people.find((person) => person.id === item.fixedPersonId)
-        if (pinned && (pinned.groupCode !== terminal.groupCode
+        if (pinned && !(item.positionCode === 'OVERNIGHT' && item.slotCode === terminal.slotCode)
+            && (pinned.groupCode !== terminal.groupCode
             || item.slotCode !== terminal.slotCode || item.groupCode !== terminal.groupCode)) {
           expected.delete(pinned.id)
         }
       })
     const scheduled = new Set(
       assignments
-        .filter((item) => item.slotCode === terminal.slotCode && item.groupCode === terminal.groupCode)
+        .filter((item) => item.slotCode === terminal.slotCode && item.groupCode === terminal.groupCode
+          && item.positionCode !== 'OVERNIGHT')
         .flatMap((item) => item.personIds),
     )
     scheduled.forEach((id) => { if (!expected.has(id)) scheduled.delete(id) })
@@ -448,11 +454,13 @@ function reconcileTerminals(assignments: Assignment[], people: Person[]) {
   for (const terminal of next.filter((assignment) => assignment.positionCode === 'TERMINAL')) {
     const taken = new Set<string>()
     next
-      .filter((assignment) => assignment.slotCode === terminal.slotCode && assignment.groupCode === terminal.groupCode && assignment.positionCode !== 'TERMINAL')
+      .filter((assignment) => assignment.slotCode === terminal.slotCode && assignment.groupCode === terminal.groupCode
+        && assignment.positionCode !== 'TERMINAL' && assignment.positionCode !== 'OVERNIGHT')
       .forEach((assignment) => assignment.personIds.forEach((id) => taken.add(id)))
     const available = people.filter((person) => person.enabled && person.groupCode === terminal.groupCode
       && !taken.has(person.id)
-      && !next.some((item) => item !== terminal && item.fixedPersonId === person.id))
+      && !next.some((item) => item !== terminal && item.fixedPersonId === person.id
+        && !(item.slotCode === terminal.slotCode && item.positionCode === 'OVERNIGHT')))
     const fixedPerson = people.find((person) => person.id === terminal.fixedPersonId && person.enabled)
     if (fixedPerson && !taken.has(fixedPerson.id) && !available.some((person) => person.id === fixedPerson.id)) {
       available.push(fixedPerson)
@@ -466,12 +474,14 @@ function reconcileTerminals(assignments: Assignment[], people: Person[]) {
       if (bomb) {
         const assignedElsewhere = new Set(next
           .filter((assignment) => assignment.slotCode === terminal.slotCode && assignment.groupCode === terminal.groupCode
-            && assignment.positionCode !== 'BOMB' && assignment.positionCode !== 'TERMINAL')
+            && assignment.positionCode !== 'BOMB' && assignment.positionCode !== 'TERMINAL'
+            && assignment.positionCode !== 'OVERNIGHT')
           .flatMap((assignment) => assignment.personIds))
         bomb.personIds = people
           .filter((person) => person.enabled && (person.groupCode === terminal.groupCode || person.id === bomb.fixedPersonId)
             && person.qualifiedPositionCodes.includes('BOMB') && !assignedElsewhere.has(person.id)
-            && !next.some((item) => item !== bomb && item.fixedPersonId === person.id)
+            && !next.some((item) => item !== bomb && item.fixedPersonId === person.id
+              && !(item.slotCode === bomb.slotCode && item.positionCode === 'OVERNIGHT'))
             && person.id !== replacement?.id)
           .map((person) => person.id)
       }
@@ -768,11 +778,10 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   }
 
   const eligibleFor = (assignment: Assignment, assignments: Assignment[] = activeAssignments, excludedIds: string[] = []) => {
-    const assignedElsewhere = new Set(
-      assignments
-        .filter((item) => item.slotCode === assignment.slotCode && item.positionCode !== 'TERMINAL' && item !== assignment)
-        .flatMap((item) => item.personIds),
-    )
+    const assignedElsewhere = new Set(assignment.positionCode === 'OVERNIGHT' ? [] : assignments
+      .filter((item) => item.slotCode === assignment.slotCode && item.positionCode !== 'TERMINAL'
+        && item.positionCode !== 'OVERNIGHT' && item !== assignment)
+      .flatMap((item) => item.personIds))
     const flowUsed = new Set(
       assignment.positionCode === 'FLOW'
         ? assignments.filter((item) => item.positionCode === 'FLOW' && item !== assignment).flatMap((item) => item.personIds)
@@ -780,7 +789,9 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     )
     const fixedElsewhere = new Set(
       assignments
-        .filter((item) => item.fixedPersonId && item !== assignment)
+        .filter((item) => item.fixedPersonId && item !== assignment
+          && !(item.slotCode === assignment.slotCode
+            && (item.positionCode === 'OVERNIGHT' || assignment.positionCode === 'OVERNIGHT')))
         .map((item) => item.fixedPersonId as string),
     )
     return day.people.filter((person) =>
@@ -924,9 +935,11 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
         const freePeople = day.candidate || editing ? day.people.filter((person) => person.enabled && !used.has(person.id)) : []
         if (role === 'REST') {
           const meal = slotAssignments.find((item) => item.positionCode === 'MEAL')
+          const overnight = slotAssignments.find((item) => item.positionCode === 'OVERNIGHT')
           return <div className="combined-rest-cell">
             {meal && <div className="meal-duty">{assignmentPeople(meal, 'MEAL')}{assignmentEditor(meal, 'MEAL')}</div>}
-            {freePeople.length ? <div className="chip-list">{freePeople.map((person) => personChip(person.id, day.people, 'rest-chip'))}</div> : !meal && <span className="empty-mark">—</span>}
+            {overnight?.personIds.length ? <div className="overnight-inline"><Tag color="purple">过夜</Tag><div className="chip-list">{overnight.personIds.map((id) => personChip(id, day.people, 'overnight-chip'))}</div></div> : null}
+            {freePeople.length ? <div className="chip-list">{freePeople.map((person) => personChip(person.id, day.people, 'rest-chip'))}</div> : !meal && !overnight?.personIds.length && <span className="empty-mark">—</span>}
           </div>
         }
         const assignment = slotAssignments.find((item) => item.positionCode === role)

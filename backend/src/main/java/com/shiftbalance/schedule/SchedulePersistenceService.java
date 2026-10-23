@@ -421,7 +421,8 @@ public class SchedulePersistenceService {
                                List<ScheduleEditAssignment> assignments) {
         Map<AssignmentKey, RequirementRule> rules = requirementRules(configurationSnapshot);
         Set<AssignmentKey> seenAssignments = new HashSet<>();
-        Set<String> seenPeopleBySlot = new HashSet<>();
+        Set<String> seenStaffingPeopleBySlot = new HashSet<>();
+        Set<String> seenOvernightPeopleBySlot = new HashSet<>();
         Map<AssignmentKey, Integer> counts = new HashMap<>();
         Map<AssignmentKey, Set<Long>> assignedPeople = new HashMap<>();
         Map<String, Integer> supervisorsBySlot = new HashMap<>();
@@ -447,12 +448,18 @@ public class SchedulePersistenceService {
             Set<String> localPeople = new HashSet<>();
             for (String personIdText : assignment.personIds()) {
                 long personId = parsePersonId(personIdText);
-                if (!localPeople.add(personIdText) || !seenPeopleBySlot.add(assignment.slotCode() + ":" + personId)) {
+                String slotPerson = assignment.slotCode() + ":" + personId;
+                Set<String> seenPeople = assignment.positionCode().equals("OVERNIGHT")
+                        ? seenOvernightPeopleBySlot : seenStaffingPeopleBySlot;
+                if (!localPeople.add(personIdText) || !seenPeople.add(slotPerson)) {
                     throw badRequest("同一人员不能在同一时段重复安排：" + personIdText);
                 }
                 boolean fixedPerson = rule != null && personIdText.equals(rule.fixedPersonId());
-                boolean fixedElsewhere = rules.values().stream()
-                        .anyMatch(item -> personIdText.equals(item.fixedPersonId()));
+                boolean fixedElsewhere = rules.entrySet().stream()
+                        .anyMatch(entry -> personIdText.equals(entry.getValue().fixedPersonId())
+                                && !(entry.getKey().slotCode().equals(key.slotCode())
+                                && (entry.getKey().positionCode().equals("OVERNIGHT")
+                                || key.positionCode().equals("OVERNIGHT"))));
                 if (fixedElsewhere && !fixedPerson) {
                     throw badRequest("固定人员只能安排在其指定时段和岗位：" + personIdText);
                 }
@@ -502,10 +509,12 @@ public class SchedulePersistenceService {
             Set<Long> expected = activePeopleInGroup(scheduleDate, terminal.groupCode());
             Set<Long> scheduled = new HashSet<>();
             rules.keySet().stream().filter(key -> key.slotCode().equals(terminal.slotCode())
-                            && key.groupCode().equals(terminal.groupCode()))
+                            && key.groupCode().equals(terminal.groupCode())
+                            && !key.positionCode().equals("OVERNIGHT"))
                     .forEach(key -> scheduled.addAll(assignedPeople.getOrDefault(key, Set.of())));
             rules.forEach((key, rule) -> {
                 if (rule.fixedPersonId() != null
+                        && !(key.positionCode().equals("OVERNIGHT") && key.slotCode().equals(terminal.slotCode()))
                         && (!key.groupCode().equals(terminal.groupCode())
                         || !key.slotCode().equals(terminal.slotCode()))) {
                     expected.remove(parsePersonId(rule.fixedPersonId()));

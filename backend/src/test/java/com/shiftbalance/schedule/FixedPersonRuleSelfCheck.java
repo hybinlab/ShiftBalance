@@ -50,7 +50,35 @@ public final class FixedPersonRuleSelfCheck {
             throw new AssertionError("Fixed person was assigned outside the configured slot.");
         }
 
+        checkOvernightIsAdditionalDuty();
         checkPowerBankRotation();
+    }
+
+    private static void checkOvernightIsAdditionalDuty() {
+        StaffMember overnightEligible = new StaffMember("1", "早下兼过夜", "B", true,
+                Set.of("BOMB", "OVERNIGHT"), Map.of());
+        GenerateRequest request = new GenerateRequest(LocalDate.of(2026, 10, 20), List.of(
+                overnightEligible,
+                personWithPositions("2", "晚下员工二", "B", Set.of("BOMB")),
+                personWithPositions("3", "晚下员工三", "B", Set.of("BOMB")),
+                personWithPositions("4", "晚下员工四", "B", Set.of("BOMB"))), List.of(
+                new StaffingRequirement("NIGHT_UNTIL_END", "BOMB", "防爆", "B", 3, 3, "1"),
+                new StaffingRequirement("NIGHT_UNTIL_END", "TERMINAL", "候机楼", "B", 0, null, null),
+                new StaffingRequirement("NIGHT_UNTIL_END", "OVERNIGHT", "过夜", "B", 1, 1, null)));
+
+        var result = new ScheduleSolver().generate(request);
+        if (!result.status().equals("OPTIMAL") && !result.status().equals("FEASIBLE")) {
+            throw new AssertionError("Overnight must not consume the regular post assignment: " + result.messages());
+        }
+        boolean onBomb = result.assignments().stream()
+                .filter(item -> item.positionCode().equals("BOMB"))
+                .flatMap(item -> item.people().stream()).anyMatch(person -> person.id().equals("1"));
+        boolean overnight = result.assignments().stream()
+                .filter(item -> item.positionCode().equals("OVERNIGHT"))
+                .flatMap(item -> item.people().stream()).anyMatch(person -> person.id().equals("1"));
+        if (!onBomb || !overnight) {
+            throw new AssertionError("The same person should cover the formal post and overnight duty.");
+        }
     }
 
     private static void checkPowerBankRotation() {
@@ -86,5 +114,9 @@ public final class FixedPersonRuleSelfCheck {
 
     private static StaffMember person(String id, String name, String groupCode) {
         return new StaffMember(id, name, groupCode, true, Set.of("MEAL"), Map.of());
+    }
+
+    private static StaffMember personWithPositions(String id, String name, String groupCode, Set<String> positions) {
+        return new StaffMember(id, name, groupCode, true, positions, Map.of());
     }
 }

@@ -112,7 +112,8 @@ CREATE TABLE schedule_assignment (
     time_slot_code VARCHAR(40) NOT NULL REFERENCES time_slot(code),
     group_id_snapshot BIGINT NOT NULL REFERENCES staff_group(id),
     terminal_supervisor BOOLEAN NOT NULL DEFAULT FALSE,
-    UNIQUE (schedule_id, person_id, time_slot_code)
+    CONSTRAINT schedule_assignment_one_position_per_person_slot
+        UNIQUE (schedule_id, person_id, time_slot_code, position_id)
 );
 
 CREATE TABLE rotation_state (

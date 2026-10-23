@@ -62,8 +62,10 @@ public class ScheduleSolver {
                 BoolVar variable = model.newBoolVar("assign_%d_%s".formatted(index, safeName(person.id())));
                 variablesForRequirement.put(person.id(), variable);
                 allAssignmentVars.add(variable);
-                byPersonAndSlot.computeIfAbsent(new SlotPersonKey(requirement.slotCode(), person.id()), ignored -> new ArrayList<>())
-                        .add(variable);
+                if (!isIndependentFromStaffing(requirement.positionCode())) {
+                    byPersonAndSlot.computeIfAbsent(new SlotPersonKey(requirement.slotCode(), person.id()), ignored -> new ArrayList<>())
+                            .add(variable);
+                }
             }
             assignmentVars.put(index, variablesForRequirement);
             if (requirement.fixedPersonId() != null) {
@@ -214,7 +216,7 @@ public class ScheduleSolver {
         }
 
         Set<String> requirementKeys = new LinkedHashSet<>();
-        Set<SlotPersonKey> fixedPeopleBySlot = new LinkedHashSet<>();
+        Map<SlotPersonKey, Set<String>> fixedPositionsBySlot = new HashMap<>();
         for (StaffingRequirement requirement : request.requirements()) {
             if (requirement == null || requirement.slotCode() == null || requirement.positionCode() == null
                     || requirement.positionName() == null || requirement.groupCode() == null) {
@@ -249,9 +251,13 @@ public class ScheduleSolver {
                 if (requirement.maxCount() != null && requirement.maxCount() < 1) {
                     throw badRequest("固定人员会占用一个岗位名额，最高人数不能设为 0。");
                 }
-                if (!fixedPeopleBySlot.add(new SlotPersonKey(requirement.slotCode(), requirement.fixedPersonId()))) {
+                SlotPersonKey fixedKey = new SlotPersonKey(requirement.slotCode(), requirement.fixedPersonId());
+                Set<String> fixedPositions = fixedPositionsBySlot.computeIfAbsent(fixedKey, ignored -> new LinkedHashSet<>());
+                if (!isIndependentFromStaffing(requirement.positionCode())
+                        && fixedPositions.stream().anyMatch(position -> !isIndependentFromStaffing(position))) {
                     throw badRequest("同一时段不能把同一人员固定到多个岗位：" + requirement.fixedPersonId());
                 }
+                fixedPositions.add(requirement.positionCode());
             }
             String key = requirement.slotCode() + "\u0000" + requirement.positionCode();
             if (!requirementKeys.add(key)) {
@@ -335,6 +341,11 @@ public class ScheduleSolver {
                             .anyMatch(item -> person.id().equals(item.fixedPersonId()));
                     return fixedAnywhere
                             ? person.id().equals(requirement.fixedPersonId())
+                            || person.groupCode().equals(requirement.groupCode())
+                            && allRequirements.stream().anyMatch(item -> person.id().equals(item.fixedPersonId())
+                            && item.slotCode().equals(requirement.slotCode())
+                            && (isIndependentFromStaffing(item.positionCode())
+                            || isIndependentFromStaffing(requirement.positionCode())))
                             : person.groupCode().equals(requirement.groupCode());
                 })
                 .filter(person -> requirement.positionCode().equals("TERMINAL")
@@ -347,9 +358,9 @@ public class ScheduleSolver {
         boolean fixedAnywhere = request.requirements().stream()
                 .anyMatch(requirement -> person.id().equals(requirement.fixedPersonId()));
         return fixedAnywhere && request.requirements().stream().noneMatch(requirement ->
-                requirement.slotCode().equals(slotCode)
-                        && requirement.groupCode().equals(groupCode)
-                        && person.id().equals(requirement.fixedPersonId()));
+                requirement.slotCode().equals(slotCode) && person.id().equals(requirement.fixedPersonId())
+                        && (requirement.groupCode().equals(groupCode)
+                        || isIndependentFromStaffing(requirement.positionCode())));
     }
 
     private static StaffingRequirement requirement(List<StaffingRequirement> requirements, String positionCode) {
@@ -371,6 +382,10 @@ public class ScheduleSolver {
 
     private static boolean isFixedEarlyTerminalSlot(String slotCode) {
         return slotCode.equals("NEXT_DAY_0530_0800") || slotCode.equals("NEXT_DAY_0800_0900");
+    }
+
+    private static boolean isIndependentFromStaffing(String positionCode) {
+        return positionCode.equals("OVERNIGHT");
     }
 
     private static List<IntVar> addFairnessModel(
@@ -478,7 +493,8 @@ public class ScheduleSolver {
                 for (int index = 0; index < request.requirements().size(); index++) {
                     StaffingRequirement requirement = request.requirements().get(index);
                     if (!requirement.slotCode().equals(bomb.slotCode())
-                            || !requirement.groupCode().equals(bomb.groupCode())) {
+                            || !requirement.groupCode().equals(bomb.groupCode())
+                            || isIndependentFromStaffing(requirement.positionCode())) {
                         continue;
                     }
                     BoolVar variable = assignmentVars.getOrDefault(index, Map.of()).get(person.id());
@@ -529,7 +545,8 @@ public class ScheduleSolver {
                 for (int index = 0; index < request.requirements().size(); index++) {
                     StaffingRequirement other = request.requirements().get(index);
                     if (index == terminalIndex || !other.slotCode().equals(terminal.slotCode())
-                            || !other.groupCode().equals(terminal.groupCode())) {
+                            || !other.groupCode().equals(terminal.groupCode())
+                            || isIndependentFromStaffing(other.positionCode())) {
                         continue;
                     }
                     BoolVar variable = assignmentVars.getOrDefault(index, Map.of()).get(person.id());
