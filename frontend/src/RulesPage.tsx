@@ -208,6 +208,32 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
   const updateDailyRow = (key: string, changes: Partial<DailyRow>) => {
     setDailyRows((rows) => rows.map((row) => row.key === key ? { ...row, ...changes } : row))
   }
+  const updateTemplateGroupRole = (row: RequirementRow, groupRole: TemplateRequirement['groupRole']) => {
+    const mainPositions = ['BOMB', 'TERMINAL', 'MEZZANINE']
+    const oppositeRole = groupRole === 'EARLY_DOWN' ? 'LATE_DOWN' : 'EARLY_DOWN'
+    const mainRole = row.positionCode === 'FLOW' && row.slotCode !== 'NIGHT_UNTIL_END'
+      ? oppositeRole
+      : groupRole
+    setTemplateRows((rows) => rows.map((item) => {
+      if (item.slotCode !== row.slotCode) return item
+      if (mainPositions.includes(row.positionCode)) {
+        if (mainPositions.includes(item.positionCode)) return { ...item, groupRole }
+        if (item.positionCode === 'FLOW') {
+          return { ...item, groupRole: row.slotCode === 'NIGHT_UNTIL_END' ? groupRole : oppositeRole }
+        }
+      }
+      if (row.positionCode === 'FLOW' && mainPositions.includes(item.positionCode)) {
+        return { ...item, groupRole: mainRole }
+      }
+      return item.positionCode === row.positionCode ? { ...item, groupRole } : item
+    }))
+  }
+  const isDerivedTerminal = (
+    row: { slotCode: string; positionCode: string },
+    rows: Array<{ slotCode: string; positionCode: string }>,
+  ) => row.positionCode === 'TERMINAL'
+    && !isFixedEarlyTerminalSlot(row.slotCode)
+    && rows.some((item) => item.slotCode === row.slotCode && ['BOMB', 'MEZZANINE'].includes(item.positionCode))
 
   const templateColumns: TableColumnsType<RequirementRow> = [
     { title: '时间段', dataIndex: 'slotCode', width: 190, render: (code: string, row) => <Select aria-label="标准规则时间段" value={code} options={slotOptions} onChange={(slotCode) => {
@@ -217,19 +243,24 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
     { title: '岗位', dataIndex: 'positionCode', width: 160, render: (code: string, row) => <Select aria-label="标准规则岗位" value={code} options={positionOptions(code)} onChange={(positionCode) => {
       updateTemplateRow(row.key, { positionCode, fixedPersonId: null, ...defaultCounts(positionCode, row.slotCode) })
     }} /> },
-    { title: <Tooltip title="按轮班锚点解析成当天的 A/B 组；常规回流由轮休组负责，19:30 后由轮岗组负责。">排班组别</Tooltip>, dataIndex: 'groupRole', width: 150, render: (role: string, row) => {
+    { title: <Tooltip title="按轮班锚点解析成当天的 A/B 组；常规回流由轮休组负责，19:30 后由轮岗组负责。修改防爆、夹层、候机楼或回流时会同步相关组别。">排班组别</Tooltip>, dataIndex: 'groupRole', width: 150, render: (role: string, row) => {
       const fixedRole = requiredGroupRole(row.slotCode)
       return <Select aria-label="标准规则组别" value={role} disabled={Boolean(fixedRole)} options={roleOptions} onChange={(groupRole: string) => {
-        if (groupRole === 'EARLY_DOWN' || groupRole === 'LATE_DOWN') updateTemplateRow(row.key, { groupRole })
+        if (groupRole === 'EARLY_DOWN' || groupRole === 'LATE_DOWN') updateTemplateGroupRole(row, groupRole)
       }} />
     } },
     { title: <Tooltip title="人员不受组别轮换影响，只在配置的固定时段和岗位上岗；仍须具备岗位资格，同一时段不能兼任其他岗位。">固定人员</Tooltip>, dataIndex: 'fixedPersonId', width: 180, render: (value: string | null, row) => <Select aria-label="标准规则固定人员" allowClear showSearch optionFilterProp="label" placeholder="不固定" value={value ?? undefined} options={fixedPersonOptions(row.positionCode, value)} onChange={(fixedPersonId) => updateTemplateRow(row.key, {
       fixedPersonId: fixedPersonId ?? null,
       ...(fixedPersonId ? { minCount: Math.max(1, row.minCount) } : {}),
     })} /> },
-    { title: '最低人数', dataIndex: 'minCount', width: 125, render: (value: number, row) => <InputNumber aria-label="标准规则最低人数" min={minimumCount(row.positionCode)} precision={0} value={value} disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode)} onChange={(minCount) => minCount !== null && updateTemplateRow(row.key, { minCount })} /> },
-    { title: <Tooltip title="留空代表不设上限。夹层、过夜和回流人数可按实际需要调整；防爆至少 3 人，打饭固定 2 人。">最高人数</Tooltip>, dataIndex: 'maxCount', width: 140, render: (value: number | null, row) => <InputNumber aria-label="标准规则最高人数" min={row.minCount} precision={0} value={value} placeholder="不限" disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode)} onChange={(maxCount) => updateTemplateRow(row.key, { maxCount: maxCount ?? null })} /> },
-    { title: '操作', key: 'actions', width: 76, align: 'right', render: (_, row) => <Tooltip title={row.positionCode === 'BOMB' ? '防爆岗每个时段必需' : isFixedEarlyCount(row.positionCode, row.slotCode) ? '次日早班固定岗位不能删除' : ''}><Button type="text" danger aria-label="删除标准规则" icon={<DeleteOutlined />} disabled={row.positionCode === 'BOMB' || isFixedEarlyCount(row.positionCode, row.slotCode)} onClick={() => setTemplateRows((rows) => rows.filter((item) => item.key !== row.key))} /></Tooltip> },
+    { title: '最低人数', dataIndex: 'minCount', width: 125, render: (value: number, row) => <Tooltip title={isDerivedTerminal(row, templateRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="标准规则最低人数" min={minimumCount(row.positionCode)} precision={0} value={value} disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, templateRows)} onChange={(minCount) => minCount !== null && updateTemplateRow(row.key, { minCount })} /></Tooltip> },
+    { title: <Tooltip title="留空代表不设上限。夹层、过夜和回流人数可按实际需要调整；防爆至少 3 人，打饭固定 2 人。">最高人数</Tooltip>, dataIndex: 'maxCount', width: 140, render: (value: number | null, row) => <Tooltip title={isDerivedTerminal(row, templateRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="标准规则最高人数" min={row.minCount} precision={0} value={value} placeholder="不限" disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, templateRows)} onChange={(maxCount) => updateTemplateRow(row.key, { maxCount: maxCount ?? null })} /></Tooltip> },
+    { title: '操作', key: 'actions', width: 76, align: 'right', render: (_, row) => {
+      const terminalRequired = row.positionCode === 'TERMINAL' && templateRows.some((item) => item.slotCode === row.slotCode && ['BOMB', 'MEZZANINE'].includes(item.positionCode))
+      const disabled = row.positionCode === 'BOMB' || isFixedEarlyCount(row.positionCode, row.slotCode) || terminalRequired
+      const title = row.positionCode === 'BOMB' ? '防爆岗每个时段必需' : isFixedEarlyCount(row.positionCode, row.slotCode) ? '次日早班固定岗位不能删除' : terminalRequired ? '防爆或夹层已配置，候机楼岗位必须保留' : ''
+      return <Tooltip title={title}><Button type="text" danger aria-label="删除标准规则" icon={<DeleteOutlined />} disabled={disabled} onClick={() => setTemplateRows((rows) => rows.filter((item) => item.key !== row.key))} /></Tooltip>
+    } },
   ]
 
   const dailyColumns: TableColumnsType<DailyRow> = [
@@ -240,12 +271,17 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
       fixedPersonId: fixedPersonId ?? null,
       ...(fixedPersonId ? { minCount: Math.max(1, row.minCount) } : {}),
     })} /> },
-    { title: '最低人数', dataIndex: 'minCount', width: 125, render: (value: number, row) => <InputNumber aria-label="日期例外最低人数" min={minimumCount(row.positionCode)} precision={0} value={value} disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode)} onChange={(minCount) => minCount !== null && updateDailyRow(row.key, { minCount })} /> },
-    { title: <Tooltip title="留空代表不设上限。夹层、过夜和回流人数可按实际需要调整；防爆至少 3 人，打饭固定 2 人。">最高人数</Tooltip>, dataIndex: 'maxCount', width: 140, render: (value: number | null, row) => <InputNumber aria-label="日期例外最高人数" min={row.minCount} precision={0} value={value} placeholder="不限" disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode)} onChange={(maxCount) => updateDailyRow(row.key, { maxCount: maxCount ?? null })} /> },
-    { title: '操作', key: 'actions', width: 76, align: 'right', render: (_, row) => <Tooltip title={row.positionCode === 'BOMB' ? '防爆岗每个时段必需' : isFixedEarlyCount(row.positionCode, row.slotCode) ? '次日早班固定岗位不能删除' : ''}><Button type="text" danger aria-label="删除日期例外" icon={<DeleteOutlined />} disabled={row.positionCode === 'BOMB' || isFixedEarlyCount(row.positionCode, row.slotCode)} onClick={() => setDailyRows((rows) => rows.filter((item) => item.key !== row.key))} /></Tooltip> },
+    { title: '最低人数', dataIndex: 'minCount', width: 125, render: (value: number, row) => <Tooltip title={isDerivedTerminal(row, dailyRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="日期例外最低人数" min={minimumCount(row.positionCode)} precision={0} value={value} disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, dailyRows)} onChange={(minCount) => minCount !== null && updateDailyRow(row.key, { minCount })} /></Tooltip> },
+    { title: <Tooltip title="留空代表不设上限。夹层、过夜和回流人数可按实际需要调整；防爆至少 3 人，打饭固定 2 人。">最高人数</Tooltip>, dataIndex: 'maxCount', width: 140, render: (value: number | null, row) => <Tooltip title={isDerivedTerminal(row, dailyRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="日期例外最高人数" min={row.minCount} precision={0} value={value} placeholder="不限" disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, dailyRows)} onChange={(maxCount) => updateDailyRow(row.key, { maxCount: maxCount ?? null })} /></Tooltip> },
+    { title: '操作', key: 'actions', width: 76, align: 'right', render: (_, row) => {
+      const terminalRequired = row.positionCode === 'TERMINAL' && dailyRows.some((item) => item.slotCode === row.slotCode && ['BOMB', 'MEZZANINE'].includes(item.positionCode))
+      const disabled = row.positionCode === 'BOMB' || isFixedEarlyCount(row.positionCode, row.slotCode) || terminalRequired
+      const title = row.positionCode === 'BOMB' ? '防爆岗每个时段必需' : isFixedEarlyCount(row.positionCode, row.slotCode) ? '次日早班固定岗位不能删除' : terminalRequired ? '防爆或夹层已配置，候机楼岗位必须保留' : ''
+      return <Tooltip title={title}><Button type="text" danger aria-label="删除日期例外" icon={<DeleteOutlined />} disabled={disabled} onClick={() => setDailyRows((rows) => rows.filter((item) => item.key !== row.key))} /></Tooltip>
+    } },
   ]
 
-  const validateRows = (rows: Array<{ slotCode: string; positionCode: string; minCount: number; maxCount: number | null; fixedPersonId?: string | null }>, requiredBombSlots: string[] = []) => {
+  const validateRows = (rows: Array<{ slotCode: string; positionCode: string; minCount: number; maxCount: number | null; fixedPersonId?: string | null; groupRole?: TemplateRequirement['groupRole'] }>, requiredBombSlots: string[] = []) => {
     const seen = new Set<string>()
     const fixedSeen = new Set<string>()
     for (const row of rows) {
@@ -260,6 +296,32 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
       if (row.positionCode === 'BOMB' && row.minCount < 3) return `${slotMap.get(row.slotCode) ?? row.slotCode}：防爆至少需要 3 人。`
       if (row.positionCode === 'MEAL' && (row.minCount !== 2 || row.maxCount !== null && row.maxCount !== 2)) return `${slotMap.get(row.slotCode) ?? row.slotCode}：每次打饭必须安排 2 人。`
       if (row.maxCount !== null && row.maxCount < row.minCount) return `${slotMap.get(row.slotCode) ?? row.slotCode}：最高人数不能低于最低人数。`
+      if (isDerivedTerminal(row, rows) && (row.minCount !== 0 || row.maxCount !== null)) {
+        return `${slotMap.get(row.slotCode) ?? row.slotCode}：候机楼由剩余人员自动计算，最低人数须为 0、最高人数留空。`
+      }
+    }
+    for (const slotCode of new Set(rows.map((row) => row.slotCode))) {
+      const slotRows = rows.filter((row) => row.slotCode === slotCode)
+      const rowFor = (positionCode: string) => slotRows.find((row) => row.positionCode === positionCode)
+      const bomb = rowFor('BOMB')
+      const terminal = rowFor('TERMINAL')
+      const mezzanine = rowFor('MEZZANINE')
+      const flow = rowFor('FLOW')
+      if ((bomb || mezzanine) && !terminal) {
+        return `${slotMap.get(slotCode) ?? slotCode}：配置防爆或夹层时，必须保留候机楼岗位。`
+      }
+      if (terminal?.groupRole && (bomb?.groupRole && terminal.groupRole !== bomb.groupRole
+          || mezzanine?.groupRole && terminal.groupRole !== mezzanine.groupRole)) {
+        return `${slotMap.get(slotCode) ?? slotCode}：防爆、夹层和候机楼必须属于同一组。`
+      }
+      if (bomb?.groupRole && flow?.groupRole) {
+        const expectedFlowRole = slotCode === 'NIGHT_UNTIL_END'
+          ? bomb.groupRole
+          : bomb.groupRole === 'EARLY_DOWN' ? 'LATE_DOWN' : 'EARLY_DOWN'
+        if (flow.groupRole !== expectedFlowRole) {
+          return `${slotMap.get(slotCode) ?? slotCode}：回流组别须按上岗组交替设置。`
+        }
+      }
     }
     for (const slotCode of ['NEXT_DAY_0530_0800', 'NEXT_DAY_0800_0900']) {
       const slotRows = rows.filter((row) => row.slotCode === slotCode)

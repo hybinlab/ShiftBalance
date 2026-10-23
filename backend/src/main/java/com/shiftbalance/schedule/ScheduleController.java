@@ -11,6 +11,7 @@ import com.shiftbalance.schedule.ScheduleDtos.StaffingRequirement;
 import com.shiftbalance.schedule.ScheduleDtos.EditScheduleRequest;
 import com.shiftbalance.schedule.ScheduleDtos.ScheduleResponse;
 import com.shiftbalance.schedule.ScheduleDtos.ScheduleCalendarEntry;
+import com.shiftbalance.schedule.ScheduleDtos.ScheduleHistoryEntry;
 import com.shiftbalance.schedule.TimeSlotCatalog.TimeSlot;
 import com.shiftbalance.personnel.PersonnelService;
 import com.shiftbalance.personnel.PersonnelDtos.PersonView;
@@ -21,6 +22,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -74,9 +76,29 @@ public class ScheduleController {
         return persistenceService.calendar(startDate, endDate);
     }
 
+    @GetMapping("/history")
+    public List<ScheduleHistoryEntry> history(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
+        if (startDate != null && endDate != null && startDate.isAfter(endDate)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "历史查询开始日期不能晚于结束日期。");
+        }
+        return persistenceService.history(startDate, endDate);
+    }
+
     @GetMapping("/{scheduleId}")
     public ScheduleResponse schedule(@PathVariable long scheduleId) {
         return persistenceService.getSchedule(scheduleId);
+    }
+
+    @PostMapping("/{scheduleId}/restore")
+    public ScheduleResponse restoreSchedule(@PathVariable long scheduleId) {
+        return persistenceService.restoreAsCandidate(scheduleId);
+    }
+
+    @DeleteMapping("/{scheduleId}")
+    public void deleteSchedule(@PathVariable long scheduleId) {
+        persistenceService.deleteHistoryEntry(scheduleId);
     }
 
     @PutMapping("/{scheduleId}")

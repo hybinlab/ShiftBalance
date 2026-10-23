@@ -14,6 +14,7 @@ import com.shiftbalance.schedule.ScheduleDtos.PersonSummary;
 import com.shiftbalance.schedule.ScheduleDtos.ScheduleEditAssignment;
 import com.shiftbalance.schedule.ScheduleDtos.ScheduleResponse;
 import com.shiftbalance.schedule.ScheduleDtos.ScheduleCalendarEntry;
+import com.shiftbalance.schedule.ScheduleDtos.ScheduleHistoryEntry;
 import com.shiftbalance.schedule.ScheduleDtos.StaffingRequirement;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -22,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -54,36 +56,17 @@ public class SchedulePersistenceService {
     private GenerateResponse saveCandidate(
             GenerateRequest request, GenerateResponse result, List<PowerBankRotation.PlannedDuty> duties) {
         lockScheduleDate(request.scheduleDate());
-        List<CandidateIdentity> existing = jdbc.query("""
-                        SELECT id, version
-                        FROM schedule
-                        WHERE schedule_date = ? AND status = 'CANDIDATE'
-                        ORDER BY version DESC
-                        LIMIT 1
-                        FOR UPDATE
-                        """,
-                (rs, rowNum) -> new CandidateIdentity(rs.getLong("id"), rs.getInt("version")),
+        jdbc.update("UPDATE schedule SET status = 'CANCELLED' WHERE schedule_date = ? AND status = 'CANDIDATE'",
                 request.scheduleDate());
-        CandidateIdentity candidate;
-        if (existing.isEmpty()) {
-            // ponytail: one scheduler allocates versions; the unique constraint prevents duplicate versions. Add a per-date advisory lock if generation becomes concurrent.
-            candidate = jdbc.queryForObject("""
-                        INSERT INTO schedule (schedule_date, status, version)
-                        SELECT ?, 'CANDIDATE', COALESCE(MAX(version), 0) + 1
-                        FROM schedule
-                        WHERE schedule_date = ?
-                        RETURNING id, version
-                        """,
-                    (rs, rowNum) -> new CandidateIdentity(rs.getLong("id"), rs.getInt("version")),
-                    request.scheduleDate(), request.scheduleDate());
-        } else {
-            candidate = existing.getFirst();
-            jdbc.update("""
-                    UPDATE schedule SET status = 'CANCELLED'
-                    WHERE schedule_date = ? AND status = 'CANDIDATE' AND id <> ?
-                    """, request.scheduleDate(), candidate.id());
-            jdbc.update("DELETE FROM schedule_assignment WHERE schedule_id = ?", candidate.id());
-        }
+        CandidateIdentity candidate = jdbc.queryForObject("""
+                    INSERT INTO schedule (schedule_date, status, version)
+                    SELECT ?, 'CANDIDATE', COALESCE(MAX(version), 0) + 1
+                    FROM schedule
+                    WHERE schedule_date = ?
+                    RETURNING id, version
+                    """,
+                (rs, rowNum) -> new CandidateIdentity(rs.getLong("id"), rs.getInt("version")),
+                request.scheduleDate(), request.scheduleDate());
         if (candidate == null) {
             throw new IllegalStateException("数据库没有返回候选排班编号。");
         }
@@ -185,7 +168,7 @@ public class SchedulePersistenceService {
                 (rs, rowNum) -> toPowerBankDuty(rs.getString("direction"), rs.getString("group_code"),
                         Long.toString(rs.getLong("person_id")), rs.getString("person_name")), scheduleId);
         return new ScheduleResponse(scheduleId, header.scheduleDate(), header.status(), header.version(),
-                assignments, powerBankDuties);
+                assignments, powerBankDuties, snapshotRequirements(header.configurationSnapshot()));
     }
 
     public List<ScheduleCalendarEntry> calendar(LocalDate startDate, LocalDate endDate) {
@@ -204,6 +187,93 @@ public class SchedulePersistenceService {
                         rs.getString("status"), rs.getInt("version"),
                         snapshotRequirements(rs.getString("configuration_snapshot"))),
                 startDate, endDate);
+    }
+
+    public List<ScheduleHistoryEntry> history(LocalDate startDate, LocalDate endDate) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT s.id, s.schedule_date, s.status, s.version, s.created_at, s.published_at,
+                       allocation.assignment_count, allocation.people_count, bank_stats.duty_count,
+                       s.configuration_snapshot::text AS configuration_snapshot
+                FROM schedule s
+                CROSS JOIN LATERAL (
+                    SELECT (SELECT COUNT(*)::integer FROM schedule_assignment WHERE schedule_id = s.id) AS assignment_count,
+                           (SELECT COUNT(*)::integer FROM (
+                               SELECT person_id FROM schedule_assignment WHERE schedule_id = s.id
+                               UNION
+                               SELECT person_id FROM schedule_power_bank_duty WHERE schedule_id = s.id
+                           ) assigned_people) AS people_count
+                ) allocation
+                CROSS JOIN LATERAL (
+                    SELECT COUNT(*)::integer AS duty_count
+                    FROM schedule_power_bank_duty WHERE schedule_id = s.id
+                ) bank_stats
+                WHERE TRUE
+                """);
+        List<Object> parameters = new ArrayList<>();
+        if (startDate != null) {
+            sql.append(" AND s.schedule_date >= ?");
+            parameters.add(startDate);
+        }
+        if (endDate != null) {
+            sql.append(" AND s.schedule_date <= ?");
+            parameters.add(endDate);
+        }
+        sql.append(" ORDER BY s.schedule_date DESC, s.version DESC, s.id DESC");
+        return jdbc.query(sql.toString(), (rs, rowNum) -> new ScheduleHistoryEntry(
+                rs.getLong("id"), rs.getObject("schedule_date", LocalDate.class), rs.getString("status"),
+                rs.getInt("version"), rs.getObject("created_at", OffsetDateTime.class),
+                rs.getObject("published_at", OffsetDateTime.class), rs.getInt("assignment_count"),
+                rs.getInt("people_count"), rs.getInt("duty_count")), parameters.toArray());
+    }
+
+    @Transactional
+    public ScheduleResponse restoreAsCandidate(long scheduleId) {
+        ScheduleHeader source = scheduleHeader(scheduleId, false);
+        lockScheduleDate(source.scheduleDate());
+        source = scheduleHeader(scheduleId, true);
+        if (source.status().equals("CANDIDATE")) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "该版本仍是待发布版本，无需恢复。");
+        }
+
+        jdbc.update("UPDATE schedule SET status = 'CANCELLED' WHERE schedule_date = ? AND status = 'CANDIDATE'",
+                source.scheduleDate());
+        CandidateIdentity restored = jdbc.queryForObject("""
+                INSERT INTO schedule (schedule_date, status, version, rotation_snapshot, configuration_snapshot, created_by)
+                SELECT source.schedule_date, 'CANDIDATE',
+                       (SELECT COALESCE(MAX(version), 0) + 1 FROM schedule WHERE schedule_date = source.schedule_date),
+                       source.rotation_snapshot, source.configuration_snapshot, source.created_by
+                FROM schedule source
+                WHERE source.id = ?
+                RETURNING id, version
+                """, (rs, rowNum) -> new CandidateIdentity(rs.getLong("id"), rs.getInt("version")), scheduleId);
+        if (restored == null) throw new IllegalStateException("数据库没有返回恢复后的排班编号。");
+
+        jdbc.update("""
+                INSERT INTO schedule_assignment
+                    (schedule_id, person_id, position_id, time_slot_code, group_id_snapshot, terminal_supervisor)
+                SELECT ?, person_id, position_id, time_slot_code, group_id_snapshot, terminal_supervisor
+                FROM schedule_assignment WHERE schedule_id = ?
+                """, restored.id(), scheduleId);
+        jdbc.update("""
+                INSERT INTO schedule_power_bank_duty (schedule_id, group_id_snapshot, person_id, direction)
+                SELECT ?, group_id_snapshot, person_id, direction
+                FROM schedule_power_bank_duty WHERE schedule_id = ?
+                """, restored.id(), scheduleId);
+        return getSchedule(restored.id());
+    }
+
+    @Transactional
+    public void deleteHistoryEntry(long scheduleId) {
+        ScheduleHeader header = scheduleHeader(scheduleId, false);
+        lockScheduleDate(header.scheduleDate());
+        ScheduleHeader locked = scheduleHeader(scheduleId, true);
+        if (!locked.status().equals(header.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "记录状态已变化，请刷新历史列表后重试。");
+        }
+        int deleted = jdbc.update("DELETE FROM schedule WHERE id = ?", scheduleId);
+        if (deleted != 1) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "排班记录不存在：" + scheduleId);
+        }
     }
 
     private List<List<PowerBankRotation.PlannedDuty>> powerBankPlans(List<GenerateRequest> requests) {

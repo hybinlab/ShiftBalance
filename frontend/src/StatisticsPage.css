@@ -74,6 +74,13 @@
 .statistics-card .ant-empty-image { height: 32px; margin-bottom: 8px; }
 .statistics-card .ant-table-placeholder > td { padding-block: 8px !important; }
 .statistics-card .ant-table-placeholder .ant-empty { margin-block: 8px; }
+.statistics-chart-card .ant-card-body { padding-block: 8px 12px; }
+.assignment-chart-frame { position: relative; width: 100%; min-width: 0; }
+.assignment-chart { width: 100%; height: 100%; }
+.assignment-chart-error { position: absolute; inset: 0; display: grid; place-items: center; color: #7a8799; font-size: 13px; }
+.statistics-fairness-collapse.ant-collapse { border-color: #e4e9f1; border-radius: 9px; background: #fff; }
+.statistics-fairness-collapse .ant-collapse-header { color: #29374d !important; font-weight: 600; }
+.statistics-fairness-collapse .ant-collapse-content-box { padding: 0 12px 12px !important; }
 
 .fairness-matrix { width: 100%; overflow-x: auto; }
 .fairness-matrix-head,

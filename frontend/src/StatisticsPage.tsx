@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, DatePicker, Empty, Input, InputNumber, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Tooltip, type TableColumnsType } from 'antd'
-import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, Button, Card, Collapse, DatePicker, Empty, Input, InputNumber, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Tooltip, type TableColumnsType } from 'antd'
+import { ArrowLeftOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import type { EChartsOption } from 'echarts'
 import dayjs, { type Dayjs } from 'dayjs'
 import type { ApiRequest } from './ManagementPages'
 import './StatisticsPage.css'
@@ -10,14 +11,24 @@ type Position = { id: number; code: string; name: string }
 type PersonPositionAssignment = {
   personId: number
   personName: string
-  positionId: number
+  positionId: number | null
   positionCode: string
   positionName: string
   groupId: number
   groupCode: string
   assignmentCount: number
+  lastAssignmentDate: string | null
   fairnessCount: number
   eligibleSlotCount: number
+}
+type PowerBankAssignment = {
+  personId: number
+  personName: string
+  groupId: number
+  groupCode: string
+  direction: 'TO_WAREHOUSE' | 'FROM_WAREHOUSE'
+  assignmentCount: number
+  lastAssignmentDate: string
 }
 type PositionDistribution = {
   positionId: number
@@ -34,7 +45,7 @@ type PositionDistribution = {
   fairnessGap: number
   averageFairnessCount: number
 }
-type HistoryResponse = { startDate: string | null; endDate: string | null; assignments: PersonPositionAssignment[] }
+type HistoryResponse = { startDate: string | null; endDate: string | null; assignments: PersonPositionAssignment[]; powerBankAssignments: PowerBankAssignment[] }
 type DistributionResponse = { startDate: string | null; endDate: string | null; positions: PositionDistribution[] }
 type ScheduleStatistics = {
   scheduleId: number
@@ -45,6 +56,57 @@ type ScheduleStatistics = {
   positionDistributions: PositionDistribution[]
 }
 type Props = { apiBase: string; apiRequest: ApiRequest }
+type ChartRow = { label: string; positionId: number | null; powerBank?: boolean; values: Map<number, number> }
+
+function AssignmentChart({ option, label, height, onPositionSelect, onPowerBankSelect }: {
+  option: EChartsOption
+  label: string
+  height: number
+  onPositionSelect: (positionId: number) => void
+  onPowerBankSelect: () => void
+}) {
+  const container = useRef<HTMLDivElement>(null)
+  const [loadError, setLoadError] = useState(false)
+
+  useEffect(() => {
+    let disposed = false
+    let cleanup: (() => void) | undefined
+    setLoadError(false)
+    void Promise.all([
+      import('echarts/core'),
+      import('echarts/charts'),
+      import('echarts/components'),
+      import('echarts/renderers'),
+    ]).then(([core, charts, components, renderers]) => {
+      if (!container.current || disposed) return
+      core.use([charts.BarChart, components.GridComponent, components.LegendComponent, components.TooltipComponent, renderers.CanvasRenderer])
+      const chart = core.init(container.current)
+      chart.setOption(option)
+      chart.on('click', (params) => {
+        const data = params.data as { positionId?: unknown; powerBank?: unknown } | undefined
+        if (typeof data?.positionId === 'number') onPositionSelect(data.positionId)
+        else if (data?.powerBank === true) onPowerBankSelect()
+      })
+      const observer = new ResizeObserver(() => chart.resize())
+      observer.observe(container.current)
+      cleanup = () => {
+        observer.disconnect()
+        chart.dispose()
+      }
+    }).catch(() => {
+      if (!disposed) setLoadError(true)
+    })
+    return () => {
+      disposed = true
+      cleanup?.()
+    }
+  }, [option, onPositionSelect, onPowerBankSelect])
+
+  return <div className="assignment-chart-frame" style={{ height }}>
+    <div ref={container} className="assignment-chart" role="img" aria-label={label} aria-hidden={loadError} />
+    {loadError && <div className="assignment-chart-error" role="status">图表加载失败，请刷新统计后重试。</div>}
+  </div>
+}
 
 const countFormat = new Intl.NumberFormat('zh-CN')
 const count = (value: number) => countFormat.format(value)
@@ -60,15 +122,19 @@ function buildQuery(startDate?: string, endDate?: string, groupId?: number, posi
   return query ? `?${query}` : ''
 }
 
-function personColumns(positionMap: Map<number, string>, groupMap: Map<number, string>): TableColumnsType<PersonPositionAssignment> {
-  return [
+function personColumns(positionMap: Map<number, string>, groupMap: Map<number, string>, fairness = true): TableColumnsType<PersonPositionAssignment> {
+  const columns: TableColumnsType<PersonPositionAssignment> = [
     { title: '人员', dataIndex: 'personName', key: 'personName', fixed: 'left', width: 190, sorter: (a, b) => a.personName.localeCompare(b.personName, 'zh-CN') },
     { title: '组别', dataIndex: 'groupCode', key: 'groupCode', width: 110, render: (code: string, row) => groupMap.get(row.groupId) ?? `${code} 组` },
-    { title: '岗位', dataIndex: 'positionName', key: 'positionName', width: 150, render: (name: string, row) => positionMap.get(row.positionId) ?? name },
-    { title: '分配次数', dataIndex: 'assignmentCount', key: 'assignmentCount', width: 120, align: 'right', sorter: (a, b) => a.assignmentCount - b.assignmentCount, render: (value: number) => <span className="stat-number">{count(value)} 次</span> },
-    { title: <Tooltip title="仅统计当时属于该组、具备岗位资格且排班快照存在该岗位需求的分配">公平次数</Tooltip>, dataIndex: 'fairnessCount', key: 'fairnessCount', width: 120, align: 'right', sorter: (a, b) => a.fairnessCount - b.fairnessCount, render: (value: number) => <span className="stat-number">{count(value)} 次</span> },
-    { title: '符合条件时段', dataIndex: 'eligibleSlotCount', key: 'eligibleSlotCount', width: 140, align: 'right', sorter: (a, b) => a.eligibleSlotCount - b.eligibleSlotCount, render: (value: number) => <span className="stat-number">{count(value)} 段</span> },
+    { title: '岗位 / 轮值', dataIndex: 'positionName', key: 'positionName', width: 170, render: (name: string, row) => row.positionId === null ? name : positionMap.get(row.positionId) ?? name },
+    { title: '安排次数', dataIndex: 'assignmentCount', key: 'assignmentCount', width: 120, align: 'right', sorter: (a, b) => a.assignmentCount - b.assignmentCount, render: (value: number) => <span className="stat-number">{count(value)} 次</span> },
+    { title: '最近安排', dataIndex: 'lastAssignmentDate', key: 'lastAssignmentDate', width: 140, sorter: (a, b) => (a.lastAssignmentDate ?? '').localeCompare(b.lastAssignmentDate ?? ''), render: (value: string | null) => <span className="stat-number">{value ? dayjs(value).format('YYYY-MM-DD') : '未安排'}</span> },
   ]
+  if (fairness) columns.push(
+    { title: <Tooltip title="仅统计当时属于该组、具备岗位资格且排班快照存在该岗位需求的分配">公平计数</Tooltip>, dataIndex: 'fairnessCount', key: 'fairnessCount', width: 120, align: 'right', sorter: (a, b) => a.fairnessCount - b.fairnessCount, render: (value: number) => <span className="stat-number">{count(value)} 次</span> },
+    { title: '符合条件时段', dataIndex: 'eligibleSlotCount', key: 'eligibleSlotCount', width: 140, align: 'right', sorter: (a, b) => a.eligibleSlotCount - b.eligibleSlotCount, render: (value: number) => <span className="stat-number">{count(value)} 段</span> },
+  )
+  return columns
 }
 
 function positionColumns(groupMap: Map<number, string>): TableColumnsType<PositionDistribution> {
@@ -87,10 +153,12 @@ export default function StatisticsPage({ apiBase, apiRequest }: Props) {
   const [groups, setGroups] = useState<Group[]>([])
   const [positions, setPositions] = useState<Position[]>([])
   const [assignments, setAssignments] = useState<PersonPositionAssignment[]>([])
+  const [powerBankAssignments, setPowerBankAssignments] = useState<PowerBankAssignment[]>([])
   const [distributions, setDistributions] = useState<PositionDistribution[]>([])
   const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null)
   const [groupId, setGroupId] = useState<number>()
   const [positionId, setPositionId] = useState<number>()
+  const [powerBankOnly, setPowerBankOnly] = useState(false)
   const [search, setSearch] = useState('')
   const [tab, setTab] = useState('history')
   const [historyLoad, setHistoryLoad] = useState<{ requestKey: string; errors: string[] }>({ requestKey: '', errors: [] })
@@ -121,7 +189,10 @@ export default function StatisticsPage({ apiBase, apiRequest }: Props) {
       else nextErrors.push(`组别：${results[0].reason instanceof Error ? results[0].reason.message : '读取失败'}`)
       if (results[1].status === 'fulfilled') setPositions(results[1].value)
       else nextErrors.push(`岗位：${results[1].reason instanceof Error ? results[1].reason.message : '读取失败'}`)
-      if (results[2].status === 'fulfilled') setAssignments(results[2].value.assignments)
+      if (results[2].status === 'fulfilled') {
+        setAssignments(results[2].value.assignments)
+        setPowerBankAssignments(results[2].value.powerBankAssignments ?? [])
+      }
       else nextErrors.push(`人员岗位统计：${results[2].reason instanceof Error ? results[2].reason.message : '读取失败'}`)
       if (results[3].status === 'fulfilled') setDistributions(results[3].value.positions)
       else nextErrors.push(`岗位分布：${results[3].reason instanceof Error ? results[3].reason.message : '读取失败'}`)
@@ -132,25 +203,122 @@ export default function StatisticsPage({ apiBase, apiRequest }: Props) {
 
   const groupMap = useMemo(() => new Map(groups.map((group) => [group.id, group.name])), [groups])
   const positionMap = useMemo(() => new Map(positions.map((position) => [position.id, position.name])), [positions])
+  const powerBankRows = useMemo<PersonPositionAssignment[]>(() => powerBankAssignments.map((row) => ({
+    personId: row.personId,
+    personName: row.personName,
+    positionId: null,
+    positionCode: `POWER_BANK_${row.direction}`,
+    positionName: row.direction === 'TO_WAREHOUSE' ? '推电宝（送入仓库）' : '推电宝（次日推回）',
+    groupId: row.groupId,
+    groupCode: row.groupCode,
+    assignmentCount: row.assignmentCount,
+    lastAssignmentDate: row.lastAssignmentDate,
+    fairnessCount: 0,
+    eligibleSlotCount: 0,
+  })), [powerBankAssignments])
+  const allAssignmentRows = useMemo(() => [...assignments, ...powerBankRows], [assignments, powerBankRows])
+  const scopedAssignmentRows = powerBankOnly ? powerBankRows : positionId ? assignments : allAssignmentRows
   const filteredAssignments = useMemo(() => {
     const query = search.trim().toLocaleLowerCase()
-    return assignments.filter((row) => !query || row.personName.toLocaleLowerCase().includes(query))
-  }, [assignments, search])
+    return scopedAssignmentRows.filter((row) => !query || row.personName.toLocaleLowerCase().includes(query))
+  }, [scopedAssignmentRows, search])
   const sortedDistributions = useMemo(() => [...distributions].sort((a, b) =>
     b.fairnessGap - a.fairnessGap || a.groupCode.localeCompare(b.groupCode) || a.positionName.localeCompare(b.positionName, 'zh-CN')),
   [distributions])
-  const totalAssignments = assignments.reduce((sum, row) => sum + row.assignmentCount, 0)
-  const peopleCount = new Set(assignments.map((row) => row.personId)).size
+  const chartRows = useMemo<ChartRow[]>(() => {
+    if (powerBankOnly) {
+      const rows = new Map<string, ChartRow>()
+      for (const assignment of powerBankAssignments) {
+        const key = `${assignment.personId}-${assignment.groupId}`
+        const row = rows.get(key) ?? {
+          label: `${assignment.personName}（${groupMap.get(assignment.groupId) ?? `${assignment.groupCode}组`}）`,
+          positionId: null,
+          powerBank: true,
+          values: new Map<number, number>(),
+        }
+        row.values.set(assignment.groupId, (row.values.get(assignment.groupId) ?? 0) + assignment.assignmentCount)
+        rows.set(key, row)
+      }
+      return [...rows.values()].sort((a, b) => ([...b.values.values()][0] ?? 0) - ([...a.values.values()][0] ?? 0)
+        || a.label.localeCompare(b.label, 'zh-CN'))
+    }
+    if (positionId) {
+      const rows = assignments.filter((row) => row.positionId === positionId)
+        .map((row) => ({
+          label: `${row.personName}（${groupMap.get(row.groupId) ?? `${row.groupCode}组`}）`,
+          positionId: row.positionId,
+          values: new Map([[row.groupId, row.assignmentCount]]),
+        }))
+      return rows.sort((a, b) => ([...b.values.values()][0] ?? 0) - ([...a.values.values()][0] ?? 0)
+        || a.label.localeCompare(b.label, 'zh-CN'))
+    }
+    const rows = new Map<number, ChartRow>()
+    for (const distribution of distributions) {
+      const row = rows.get(distribution.positionId) ?? {
+        label: positionMap.get(distribution.positionId) ?? distribution.positionName,
+        positionId: distribution.positionId,
+        values: new Map<number, number>(),
+      }
+      row.values.set(distribution.groupId, distribution.assignmentCount)
+      rows.set(distribution.positionId, row)
+    }
+    const bankValues = new Map<number, number>()
+    for (const assignment of powerBankAssignments) {
+      bankValues.set(assignment.groupId, (bankValues.get(assignment.groupId) ?? 0) + assignment.assignmentCount)
+    }
+    const result = [...rows.values()]
+    if (bankValues.size) result.push({ label: '推电宝', positionId: null, powerBank: true, values: bankValues })
+    return result.sort((a, b) => {
+      const total = (row: ChartRow) => [...row.values.values()].reduce((sum, value) => sum + value, 0)
+      return total(b) - total(a) || a.label.localeCompare(b.label, 'zh-CN')
+    })
+  }, [assignments, distributions, groupMap, positionId, positionMap, powerBankAssignments, powerBankOnly])
+  const chartGroupIds = useMemo(() => [...new Set(chartRows.flatMap((row) => [...row.values.keys()]))], [chartRows])
+  const chartOption = useMemo<EChartsOption>(() => ({
+    animationDuration: 180,
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: chartGroupIds.length > 1 ? { top: 0, right: 8, itemWidth: 10, itemHeight: 10, textStyle: { color: '#566378', fontSize: 12 } } : undefined,
+    grid: { top: chartGroupIds.length > 1 ? 34 : 10, left: 10, right: 38, bottom: 8, containLabel: true },
+    xAxis: {
+      type: 'value', minInterval: 1,
+      axisLabel: { color: '#718096', fontSize: 11 },
+      axisLine: { show: false }, axisTick: { show: false },
+      splitLine: { lineStyle: { color: '#edf0f4' } },
+    },
+    yAxis: {
+      type: 'category', inverse: true, data: chartRows.map((row) => row.label),
+      axisLabel: { color: '#39485e', fontSize: 12 },
+      axisLine: { show: false }, axisTick: { show: false },
+    },
+    series: chartGroupIds.map((groupId) => {
+      const group = groups.find((item) => item.id === groupId)
+      return {
+        name: group?.name ?? `${group?.code ?? ''}组`,
+        type: 'bar',
+        barMaxWidth: 16,
+        data: chartRows.map((row) => ({ value: row.values.get(groupId) ?? null, positionId: row.positionId, powerBank: row.powerBank })),
+        itemStyle: { color: group?.code === 'A' ? '#3478e5' : '#8792a2' },
+        label: { show: true, position: 'right', color: '#48566a', fontSize: 11 },
+      }
+    }),
+  }), [chartGroupIds, chartRows, groups])
   const largestGap = sortedDistributions[0]
+  const totalAssignments = scopedAssignmentRows.reduce((sum, row) => sum + row.assignmentCount, 0)
+  const peopleCount = new Set(scopedAssignmentRows.map((row) => row.personId)).size
+  const roleCount = new Set(scopedAssignmentRows.map((row) => row.positionCode.startsWith('POWER_BANK_') ? 'POWER_BANK' : row.positionCode)).size
   const headline = tab === 'schedule'
     ? '核对单次排班的岗位覆盖与人员分配；待发布方案不会进入历史统计。'
-    : loading
-      ? '正在汇总已发布排班中的岗位分配。'
-      : largestGap?.fairnessGap
-        ? `${largestGap.groupCode} 组${largestGap.positionName}公平次数差最大，为 ${count(largestGap.fairnessGap)} 次（${count(largestGap.minFairnessCount)}–${count(largestGap.maxFairnessCount)} 次）。`
-        : distributions.length
-          ? '当前范围内可比较的组别与岗位，公平次数差均为 0。'
-          : '当前范围内暂无已发布排班；生成并调整后，请在排班管理中发布。'
+    : '查看每个人各岗位的安排次数和最近安排日期；历史记录只统计已发布排班。'
+  const lastAssignedDate = scopedAssignmentRows.reduce<string | null>((latest, row) =>
+    row.lastAssignmentDate && (!latest || row.lastAssignmentDate > latest) ? row.lastAssignmentDate : latest, null)
+  const selectPosition = useCallback((id: number) => {
+    setPowerBankOnly(false)
+    setPositionId(id)
+  }, [])
+  const selectPowerBank = useCallback(() => {
+    setPositionId(undefined)
+    setPowerBankOnly(true)
+  }, [])
 
   const loadSchedule = async () => {
     if (!scheduleIdInput || scheduleIdInput < 1 || !Number.isInteger(scheduleIdInput)) {
@@ -192,12 +360,15 @@ export default function StatisticsPage({ apiBase, apiRequest }: Props) {
           disabledDate={(date) => Boolean(dateRange?.[0] && dateRange?.[1] === null && date.isBefore(dateRange[0], 'day'))}
         />
         <Select allowClear placeholder="全部组别" value={groupId} onChange={setGroupId} options={groups.map((group) => ({ value: group.id, label: group.name }))} style={{ width: 130 }} />
-        <Select allowClear placeholder="全部岗位" value={positionId} onChange={setPositionId} options={positions.map((position) => ({ value: position.id, label: position.name }))} style={{ width: 150 }} />
+        <Select allowClear placeholder="全部岗位 / 轮值" value={powerBankOnly ? 0 : positionId} onChange={(value) => {
+          if (value === 0) selectPowerBank()
+          else { setPowerBankOnly(false); setPositionId(value) }
+        }} options={[...positions.map((position) => ({ value: position.id, label: position.name })), { value: 0, label: '推电宝轮值' }]} style={{ width: 160 }} />
       </Space>
     </div>}
 
     <Tabs className="statistics-tabs" activeKey={tab} onChange={setTab} items={[
-      { key: 'history', label: '历史岗位统计' },
+      { key: 'history', label: '历史岗位 / 轮值统计' },
       { key: 'schedule', label: '单次排班核对' },
     ]} />
 
@@ -205,13 +376,44 @@ export default function StatisticsPage({ apiBase, apiRequest }: Props) {
       {errors.length > 0 && <Alert showIcon type="error" className="statistics-error" message="部分统计数据读取失败" description={<Space direction="vertical" size={2}>{errors.map((error) => <span key={error}>{error}</span>)}</Space>} action={<Button size="small" onClick={() => setReloadKey((value) => value + 1)}>重试</Button>} />}
 
       <Card className="statistics-kpis" styles={{ body: { padding: 0 } }}>
-        <div className="statistics-kpi"><span>岗位分配记录</span><Statistic value={totalAssignments} formatter={(value) => count(Number(value))} suffix="次" /></div>
+        <div className="statistics-kpi"><span>岗位 / 轮值安排</span><Statistic value={totalAssignments} formatter={(value) => count(Number(value))} suffix="次" /></div>
         <div className="statistics-kpi"><span>参与人员</span><Statistic value={peopleCount} formatter={(value) => count(Number(value))} suffix="人" /></div>
-        <div className="statistics-kpi"><span>可比较的组别岗位</span><Statistic value={distributions.length} formatter={(value) => count(Number(value))} suffix="项" /></div>
-        <div className="statistics-kpi"><span>最大公平次数差</span><Statistic value={largestGap?.fairnessGap ?? 0} formatter={(value) => count(Number(value))} suffix="次" /></div>
+        <div className="statistics-kpi"><span>涉及岗位 / 轮值</span><Statistic value={roleCount} formatter={(value) => count(Number(value))} suffix="项" /></div>
+        <div className="statistics-kpi"><span>最近安排日期</span><strong className="schedule-date-value">{lastAssignedDate ? dayjs(lastAssignedDate).format('YYYY年M月D日') : '暂无'}</strong></div>
       </Card>
 
-      <Card className="statistics-card" title="组别 × 岗位公平性" extra={<span className="statistics-card-note">次数差 = 最高公平次数 − 最低公平次数</span>}>
+      <Card className="statistics-card statistics-chart-card"
+        title={powerBankOnly ? '推电宝人员轮值次数' : positionId ? `${positions.find((position) => position.id === positionId)?.name ?? '岗位'}人员安排次数` : '各岗位 / 轮值安排次数'}
+        extra={<Space size={10}>
+          {(positionId || powerBankOnly) && <Button type="link" size="small" icon={<ArrowLeftOutlined />} onClick={() => { setPositionId(undefined); setPowerBankOnly(false) }}>返回岗位分布</Button>}
+          <span className="statistics-card-note">{powerBankOnly ? '送入与次日推回分开记录；图表合并计次' : positionId ? '按组别对比人员次数；最近日期见下表' : '按组对比；点击岗位或推电宝查看人员明细'}</span>
+        </Space>}>
+        {loading ? <Skeleton active paragraph={{ rows: 5 }} /> : chartRows.length ? <AssignmentChart
+          option={chartOption}
+          label={powerBankOnly ? '推电宝人员轮值次数对比' : positionId ? '所选岗位的人员安排次数对比' : '不同岗位和推电宝按组别对比安排次数'}
+          height={Math.max(240, Math.min(620, chartRows.length * 34 + 55))}
+          onPositionSelect={selectPosition}
+          onPowerBankSelect={selectPowerBank}
+        /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={powerBankOnly ? '所选范围内暂无已发布的推电宝轮值' : '所选范围内暂无已发布的岗位安排'} />}
+      </Card>
+
+      <Card className="statistics-card statistics-detail-card" title="人员岗位 / 轮值安排" extra={<span className="statistics-card-note">岗位按时段计次；推电宝按送入、推回方向计次</span>}>
+        <div className="statistics-table-tools">
+          <span>{loading ? '正在汇总…' : `共 ${count(filteredAssignments.length)} 条人员岗位记录`}</span>
+          <Input allowClear prefix={<SearchOutlined />} placeholder="搜索人员" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索人员岗位统计" />
+        </div>
+        {loading ? <Skeleton active paragraph={{ rows: 5 }} /> : <Table<PersonPositionAssignment>
+          rowKey={(row) => `${row.personId}-${row.positionCode}-${row.groupId}`}
+          size="small"
+          columns={personColumns(positionMap, groupMap, false)}
+          dataSource={filteredAssignments}
+          pagination={{ pageSize: 12, showSizeChanger: false, showTotal: (total) => `共 ${count(total)} 条` }}
+          scroll={{ x: 710 }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={search ? '没有匹配的人员' : '所选范围内没有人员岗位统计'} /> }}
+        />}
+      </Card>
+
+      {!powerBankOnly && <Collapse className="statistics-fairness-collapse" items={[{ key: 'fairness', label: '岗位公平性分析', children: <Card className="statistics-card" title="组别 × 岗位公平性" extra={<span className="statistics-card-note">次数差 = 最高公平次数 − 最低公平次数</span>}>
         {loading ? <Skeleton active paragraph={{ rows: 4 }} /> : sortedDistributions.length ? <div className="fairness-matrix" role="table" aria-label="组别岗位公平次数差">
           <div className="fairness-matrix-head" role="row"><span>组别 / 岗位</span><span>符合资格</span><span>已安排</span><span>公平次数范围</span><span>次数差</span></div>
           {sortedDistributions.map((row) => {
@@ -225,24 +427,8 @@ export default function StatisticsPage({ apiBase, apiRequest }: Props) {
             </div>
           })}
         </div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="所选范围内没有可比较的岗位分配" />}
-      </Card>
-
-      <Card className="statistics-card statistics-detail-card" title="人员岗位次数" extra={<span className="statistics-card-note">每个时段的一次安排分别计数</span>}>
-        <div className="statistics-table-tools">
-          <span>{loading ? '正在汇总…' : `共 ${count(filteredAssignments.length)} 条人员岗位记录`}</span>
-          <Input allowClear prefix={<SearchOutlined />} placeholder="搜索人员" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索人员岗位统计" />
-        </div>
-        {loading ? <Skeleton active paragraph={{ rows: 5 }} /> : <Table<PersonPositionAssignment>
-          rowKey={(row) => `${row.personId}-${row.positionId}-${row.groupId}`}
-          size="small"
-          columns={personColumns(positionMap, groupMap)}
-          dataSource={filteredAssignments}
-          pagination={{ pageSize: 12, showSizeChanger: false, showTotal: (total) => `共 ${count(total)} 条` }}
-          scroll={{ x: 850 }}
-          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={search ? '没有匹配的人员' : '所选范围内没有人员岗位统计'} /> }}
-        />}
-      </Card>
-      <p className="statistics-footnote">“分配次数”按每个工作日最新发布版本中的每条人员/岗位/时段记录计数；待发布版本、已取消版本和旧发布版本不重复计入。“公平次数”仅计入人员当时属于该组、具备岗位资格且排班需求快照包含该岗位的分配。候机楼岗位不要求单独资格。系统没有考勤记录，因此这些数字表示最终发布的排班安排，不表示实际到岗。</p>
+      </Card> }]} />}
+      <p className="statistics-footnote">次数按每个工作日最新发布版本计数：普通岗位每个时段一次，推电宝送入仓库和次日推回分别计一次。“最近安排”显示所选范围内最近一次日期；待发布、已取消和旧发布版本不计入。推电宝按组内轮换独立统计，不计入岗位公平性比较。系统没有考勤记录，因此统计表示排班安排，不表示实际到岗。</p>
     </div> : <div className="statistics-schedule-view">
       <Card className="statistics-card" title="查询单次排班" extra={<span className="statistics-card-note">待发布方案可核对；历史统计只计已发布</span>}>
         <div className="schedule-lookup">

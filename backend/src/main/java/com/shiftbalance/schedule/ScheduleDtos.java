@@ -10,6 +10,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.PositiveOrZero;
 
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -124,7 +125,8 @@ public final class ScheduleDtos {
             String status,
             int version,
             List<Assignment> assignments,
-            List<PowerBankDuty> powerBankDuties) {}
+            List<PowerBankDuty> powerBankDuties,
+            List<StaffingRequirement> requirements) {}
 
     public record ScheduleCalendarEntry(
             long scheduleId,
@@ -132,6 +134,17 @@ public final class ScheduleDtos {
             String status,
             int version,
             List<StaffingRequirement> requirements) {}
+
+    public record ScheduleHistoryEntry(
+            long scheduleId,
+            LocalDate scheduleDate,
+            String status,
+            int version,
+            OffsetDateTime createdAt,
+            OffsetDateTime publishedAt,
+            int assignmentCount,
+            int peopleCount,
+            int powerBankDutyCount) {}
 
     public record PowerBankDuty(
             String direction,

@@ -1,0 +1,57 @@
+.schedule-history-page { display: grid; gap: 16px; }
+.history-page-heading { margin-bottom: 0; }
+.history-error { margin: 0; }
+.history-list-surface { overflow: hidden; border: 1px solid #e1e8f2; border-radius: 12px; background: #fff; }
+.history-list-heading { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 20px 12px; }
+.history-list-heading h2 { margin: 0; color: #25344b; font-size: 16px; font-weight: 650; }
+.history-list-heading p { margin: 4px 0 0; color: #8290a5; font-size: 12px; }
+.history-total { color: #738199; font-size: 12px; font-variant-numeric: tabular-nums; }
+.history-tabs { margin: 0 20px; border-bottom: 1px solid #edf0f5; }
+.history-tabs .ant-tabs-nav { margin-bottom: 0; }
+.history-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 10px; }
+.history-toolbar .ant-input-affix-wrapper { width: min(100%, 270px); }
+.history-table { padding: 0 20px 8px; }
+.history-table .ant-table-thead > tr > th { color: #7d8ba1; background: transparent; font-size: 12px; font-weight: 600; }
+.history-table .ant-table-tbody > tr > td { color: #4e5c72; }
+.history-identity { display: grid; gap: 3px; }
+.history-identity strong { color: #2c3b52; font-size: 13px; font-weight: 600; }
+.history-identity span, .history-time { color: #8390a4; font-size: 12px; font-variant-numeric: tabular-nums; }
+.history-detail-drawer .ant-drawer-body { padding: 0; }
+.history-drawer-title { display: grid; gap: 4px; }
+.history-drawer-title > span { color: #7d8ba1; font-size: 12px; font-weight: 400; }
+.history-drawer-title > strong { color: #26374f; font-size: 16px; }
+.history-detail-content { display: grid; gap: 20px; padding: 20px 24px 28px; }
+.history-detail-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid #e8edf4; border-radius: 9px; }
+.history-detail-meta > div { min-height: 72px; display: grid; align-content: center; gap: 7px; padding: 12px 14px; }
+.history-detail-meta > div + div { border-left: 1px solid #e8edf4; }
+.history-detail-meta > div > span { color: #8290a5; font-size: 11px; }
+.history-detail-meta > div > strong { color: #33435a; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.history-detail-section { overflow: hidden; border: 1px solid #e6ebf2; border-radius: 9px; }
+.history-detail-section-heading { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px; border-bottom: 1px solid #edf0f5; }
+.history-detail-section-heading h3 { margin: 0; color: #34445b; font-size: 14px; font-weight: 600; }
+.history-detail-section-heading span { color: #8491a4; font-size: 11px; }
+.history-detail-section .ant-table-wrapper { padding: 0 12px; }
+.history-person-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.history-person-list .ant-tag { margin: 0; }
+.history-empty-value { color: #9aa5b4; }
+.history-power-duties { display: grid; }
+.history-power-duties > div { min-height: 48px; display: flex; align-items: center; gap: 10px; padding: 8px 14px; }
+.history-power-duties > div + div { border-top: 1px solid #edf0f5; }
+.history-power-duties > div > span { color: #718097; }
+.history-power-duties > div > strong { color: #34445b; font-weight: 600; }
+.history-detail-footer { display: flex; align-items: center; gap: 12px; }
+.history-detail-footer > span { color: #8290a5; font-size: 12px; }
+
+@media (max-width: 700px) {
+  .history-list-heading { min-height: auto; padding: 14px; }
+  .history-tabs { margin: 0 14px; }
+  .history-toolbar { align-items: stretch; flex-direction: column; padding: 14px 14px 8px; }
+  .history-toolbar .ant-picker, .history-toolbar .ant-input-affix-wrapper { width: 100%; }
+  .history-table { padding: 0 10px 8px; }
+  .history-detail-content { gap: 14px; padding: 14px 12px 24px; }
+  .history-detail-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .history-detail-meta > div:nth-child(odd) { border-left: 0; }
+  .history-detail-meta > div:nth-child(n + 3) { border-top: 1px solid #e8edf4; }
+  .history-detail-section-heading { align-items: flex-start; flex-direction: column; justify-content: center; gap: 2px; padding: 8px 12px; }
+  .history-detail-footer { align-items: flex-start; flex-direction: column; }
+}

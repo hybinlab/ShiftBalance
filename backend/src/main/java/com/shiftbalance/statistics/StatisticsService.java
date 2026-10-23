@@ -2,6 +2,7 @@ package com.shiftbalance.statistics;
 
 import com.shiftbalance.statistics.StatisticsDtos.PersonPositionAssignment;
 import com.shiftbalance.statistics.StatisticsDtos.PersonPositionAssignmentsResponse;
+import com.shiftbalance.statistics.StatisticsDtos.PowerBankAssignment;
 import com.shiftbalance.statistics.StatisticsDtos.PositionDistribution;
 import com.shiftbalance.statistics.StatisticsDtos.PositionDistributionResponse;
 import com.shiftbalance.statistics.StatisticsDtos.ScheduleStatistics;
@@ -71,7 +72,8 @@ public class StatisticsService {
             ), assignment_counts AS (
                 SELECT assignment.person_id, assignment.position_id,
                        assignment.group_id_snapshot AS group_id,
-                       COUNT(DISTINCT assignment.id)::BIGINT AS assignment_count
+                       COUNT(DISTINCT assignment.id)::BIGINT AS assignment_count,
+                       MAX(scoped.schedule_date) AS last_assignment_date
                 FROM scoped_schedules scoped
                 JOIN schedule_assignment assignment ON assignment.schedule_id = scoped.id
                 GROUP BY assignment.person_id, assignment.position_id, assignment.group_id_snapshot
@@ -111,6 +113,7 @@ public class StatisticsService {
                    position.id AS position_id, position.code AS position_code, position.name AS position_name,
                    staff_group.id AS group_id, staff_group.code AS group_code,
                    COALESCE(assignment_count.assignment_count, 0)::BIGINT AS assignment_count,
+                   assignment_count.last_assignment_date,
                    COALESCE(fairness_count.fairness_count, 0)::BIGINT AS fairness_count,
                    COALESCE(opportunity.eligible_slot_count, 0)::BIGINT AS eligible_slot_count
             FROM cohort
@@ -138,7 +141,9 @@ public class StatisticsService {
         validateFilters(startDate, endDate, personId, positionId, groupId);
         List<PersonPositionAssignment> rows = loadAssignments(HISTORICAL_SCHEDULE_PREDICATE, List.of(),
                 startDate, endDate, personId, positionId, groupId);
-        return new PersonPositionAssignmentsResponse(startDate, endDate, rows);
+        List<PowerBankAssignment> powerBankRows = loadPowerBankAssignments(HISTORICAL_SCHEDULE_PREDICATE, List.of(),
+                startDate, endDate, personId, groupId);
+        return new PersonPositionAssignmentsResponse(startDate, endDate, rows, powerBankRows);
     }
 
     public PositionDistributionResponse positionDistribution(
@@ -201,7 +206,50 @@ public class StatisticsService {
                         rs.getLong("person_id"), rs.getString("person_name"),
                         rs.getLong("position_id"), rs.getString("position_code"), rs.getString("position_name"),
                         rs.getLong("group_id"), rs.getString("group_code"),
-                        rs.getLong("assignment_count"), rs.getLong("fairness_count"), rs.getLong("eligible_slot_count")),
+                        rs.getLong("assignment_count"), rs.getObject("last_assignment_date", LocalDate.class),
+                        rs.getLong("fairness_count"), rs.getLong("eligible_slot_count")),
+                parameters.toArray());
+    }
+
+    private List<PowerBankAssignment> loadPowerBankAssignments(
+            String schedulePredicate, List<Object> scheduleParameters,
+            LocalDate startDate, LocalDate endDate, Long personId, Long groupId) {
+        StringBuilder where = new StringBuilder(schedulePredicate);
+        List<Object> parameters = new ArrayList<>(scheduleParameters);
+        if (startDate != null) {
+            where.append(" AND s.schedule_date >= ?");
+            parameters.add(startDate);
+        }
+        if (endDate != null) {
+            where.append(" AND s.schedule_date <= ?");
+            parameters.add(endDate);
+        }
+        if (personId != null) {
+            where.append(" AND duty.person_id = ?");
+            parameters.add(personId);
+        }
+        if (groupId != null) {
+            where.append(" AND duty.group_id_snapshot = ?");
+            parameters.add(groupId);
+        }
+
+        return jdbc.query("""
+                        SELECT person.id AS person_id, person.name AS person_name,
+                               staff_group.id AS group_id, staff_group.code AS group_code,
+                               duty.direction, COUNT(*)::BIGINT AS assignment_count,
+                               MAX(s.schedule_date) AS last_assignment_date
+                        FROM schedule s
+                        JOIN schedule_power_bank_duty duty ON duty.schedule_id = s.id
+                        JOIN person ON person.id = duty.person_id
+                        JOIN staff_group ON staff_group.id = duty.group_id_snapshot
+                        WHERE %s
+                        GROUP BY person.id, person.name, staff_group.id, staff_group.code, duty.direction
+                        ORDER BY staff_group.code, duty.direction, person.name, person.id
+                        """.formatted(where),
+                (rs, rowNum) -> new PowerBankAssignment(
+                        rs.getLong("person_id"), rs.getString("person_name"),
+                        rs.getLong("group_id"), rs.getString("group_code"), rs.getString("direction"),
+                        rs.getLong("assignment_count"), rs.getObject("last_assignment_date", LocalDate.class)),
                 parameters.toArray());
     }
 

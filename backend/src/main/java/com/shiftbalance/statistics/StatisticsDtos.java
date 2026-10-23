@@ -9,7 +9,8 @@ public final class StatisticsDtos {
     public record PersonPositionAssignmentsResponse(
             LocalDate startDate,
             LocalDate endDate,
-            List<PersonPositionAssignment> assignments) {}
+            List<PersonPositionAssignment> assignments,
+            List<PowerBankAssignment> powerBankAssignments) {}
 
     public record PersonPositionAssignment(
             long personId,
@@ -20,8 +21,18 @@ public final class StatisticsDtos {
             long groupId,
             String groupCode,
             long assignmentCount,
+            LocalDate lastAssignmentDate,
             long fairnessCount,
             long eligibleSlotCount) {}
+
+    public record PowerBankAssignment(
+            long personId,
+            String personName,
+            long groupId,
+            String groupCode,
+            String direction,
+            long assignmentCount,
+            LocalDate lastAssignmentDate) {}
 
     public record PositionDistributionResponse(
             LocalDate startDate,

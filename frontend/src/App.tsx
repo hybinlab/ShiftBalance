@@ -29,6 +29,7 @@ import ManagementPages, { type ManagementModule } from './ManagementPages'
 import ProfilePage from './ProfilePage'
 import RulesPage from './RulesPage'
 import ScheduleCalendarPage from './ScheduleCalendarPage'
+import ScheduleHistoryPage from './ScheduleHistoryPage'
 import StatisticsPage from './StatisticsPage'
 import { groupForDate, workPeriodStartDate } from './scheduleRotation'
 import './App.css'
@@ -92,6 +93,7 @@ type ScheduleRecord = {
     people: ScheduledPerson[]
   }>
   powerBankDuties: PowerBankDuty[]
+  requirements?: Requirement[]
 }
 type WorkPeriodGenerateResponse = {
   workPeriodStartDate: string
@@ -173,12 +175,14 @@ const ROLE_CLASS: Record<string, string> = {
   FLOW: 'flow',
   REST: 'rest',
 }
+const OVERNIGHT_PERSON_ORDER = ['宾昕宇', '阳菲莉', '李文锦', '王小曼', '刘芳全', '黄在显', '钟绍凌', '邹运谷', '莫少波']
+const POWER_BANK_PERSON_ORDER = ['唐龙', '甘春霖', '刘雨鑫', '吕珈萱', '吴世富', '石蓉昌', '骆灿', '黄勇斌', '黎哲成']
 
 const today = toIsoDate(new Date())
 const envApiBase = import.meta.env.VITE_API_BASE_URL ?? ''
 type AuthSession = { authenticated: boolean; username: string | null; displayName: string | null }
 type UserProfile = { username: string; avatarAvailable: boolean }
-type AppModule = 'home' | 'schedule' | 'calendar' | 'analytics' | 'rules' | 'profile' | ManagementModule
+type AppModule = 'home' | 'schedule' | 'calendar' | 'history' | 'analytics' | 'rules' | 'profile' | ManagementModule
 let csrfToken: string | null = null
 let csrfTokenBase: string | null = null
 
@@ -559,7 +563,8 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
           if (sequence.current !== current) return
           if (saved.scheduleDate === selectedDate) {
             candidate = saved
-            if (meta.requirements?.length) requirements = meta.requirements
+            if (saved.requirements?.length) requirements = saved.requirements
+            else if (meta.requirements?.length) requirements = meta.requirements
           } else {
             localStorage.removeItem(`shiftbalance.candidate.${selectedDate}`)
           }
@@ -667,7 +672,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     if (!periodStart) return
     const periodDates = [periodStart, shiftDate(periodStart, 1)]
     const hasExistingSchedule = periodDates.some((date) => readCandidateMeta(date) !== null)
-    if (hasExistingSchedule && !(await confirmAction('重新生成两天排班', '未发布版本和手动调整会被替换；已发布版本会保留，直到新版本发布。新生成的排班仍需人工发布才计入统计。'))) return
+    if (hasExistingSchedule && !(await confirmAction('重新生成两天排班', '当前待发布版本和手动调整会转入历史记录；已发布版本会保留，直到新版本发布。新生成的排班仍需人工发布才计入统计。'))) return
     setGenerating(true)
     setNotice('')
     try {
@@ -762,19 +767,19 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     }
   }
 
-  const eligibleFor = (assignment: Assignment) => {
+  const eligibleFor = (assignment: Assignment, assignments: Assignment[] = activeAssignments, excludedIds: string[] = []) => {
     const assignedElsewhere = new Set(
-      activeAssignments
+      assignments
         .filter((item) => item.slotCode === assignment.slotCode && item.positionCode !== 'TERMINAL' && item !== assignment)
         .flatMap((item) => item.personIds),
     )
     const flowUsed = new Set(
       assignment.positionCode === 'FLOW'
-        ? activeAssignments.filter((item) => item.positionCode === 'FLOW' && item !== assignment).flatMap((item) => item.personIds)
+        ? assignments.filter((item) => item.positionCode === 'FLOW' && item !== assignment).flatMap((item) => item.personIds)
         : [],
     )
     const fixedElsewhere = new Set(
-      activeAssignments
+      assignments
         .filter((item) => item.fixedPersonId && item !== assignment)
         .map((item) => item.fixedPersonId as string),
     )
@@ -782,6 +787,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       person.enabled &&
       (person.groupCode === assignment.groupCode || person.id === assignment.fixedPersonId) &&
       !fixedElsewhere.has(person.id) &&
+      !excludedIds.includes(person.id) &&
       !assignment.personIds.includes(person.id) &&
       !assignedElsewhere.has(person.id) &&
       !flowUsed.has(person.id) &&
@@ -797,7 +803,25 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
 
   const removePerson = (assignment: Assignment, personId: string) => {
     if (personId === assignment.fixedPersonId) return
-    updateDraft((items) => items.map((item) => item === assignment ? { ...item, personIds: item.personIds.filter((id) => id !== personId) } : item))
+    updateDraft((items) => {
+      const next = items.map((item) => item === assignment
+        ? { ...item, personIds: item.personIds.filter((id) => id !== personId) }
+        : item)
+      if (assignment.positionCode !== 'MEAL') return next
+
+      const meal = next.find((item) => item.slotCode === assignment.slotCode
+        && item.positionCode === assignment.positionCode && item.groupCode === assignment.groupCode)
+      if (!meal) return next
+      // ponytail: refill this meal minimum by meal history only; day-wide cross-post fairness stays in the solver.
+      while (meal.personIds.length < meal.minCount) {
+        const replacement = eligibleFor(meal, next, [personId])
+          .sort((a, b) => (a.historicalCounts.MEAL ?? 0) - (b.historicalCounts.MEAL ?? 0)
+            || a.name.localeCompare(b.name, 'zh-CN'))[0]
+        if (!replacement) break
+        meal.personIds.push(replacement.id)
+      }
+      return next
+    })
   }
 
   const changePowerBankPerson = (direction: PowerBankDuty['direction'], personId: string) => {
@@ -935,6 +959,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     { key: 'home', icon: <Icon name="home" />, label: '首页' },
     { key: 'schedule', icon: <Icon name="calendar" />, label: '排班管理' },
     { key: 'calendar', icon: <Icon name="calendar" />, label: '排班日历' },
+    { key: 'history', icon: <Icon name="history" />, label: '历史记录' },
     { key: 'people', icon: <Icon name="people" />, label: '人员管理' },
     { key: 'groups', icon: <Icon name="group" />, label: '分组管理' },
     { key: 'positions', icon: <Icon name="briefcase" />, label: '岗位管理' },
@@ -947,7 +972,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       <aside className="sidebar">
         <div className="brand"><span className="brand-icon"><img src="/favicon.svg" alt="" /></span><span>排班系统</span></div>
         <Menu className="side-nav" mode="inline" theme="dark" selectedKeys={[activeModule]} items={navItems} onClick={({ key }) => {
-          if (key === 'home' || key === 'schedule' || key === 'calendar' || key === 'people' || key === 'groups' || key === 'positions' || key === 'analytics' || key === 'rules') setActiveModule(key)
+          if (key === 'home' || key === 'schedule' || key === 'calendar' || key === 'history' || key === 'people' || key === 'groups' || key === 'positions' || key === 'analytics' || key === 'rules') setActiveModule(key)
         }} />
         <div className="sidebar-bottom">
           <Button type="text" className="nav-item settings-link" icon={<Icon name="settings" />} onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }}>接口设置<span className="side-chevron">›</span></Button>
@@ -960,7 +985,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumb">工作台 <span>/</span> <strong>{{ home: '首页', schedule: '排班管理', calendar: '排班日历', people: '人员管理', groups: '分组管理', positions: '岗位管理', analytics: '统计分析', rules: '排班规则', profile: '用户资料' }[activeModule]}</strong></div>
+          <div className="breadcrumb">工作台 <span>/</span> <strong>{{ home: '首页', schedule: '排班管理', calendar: '排班日历', history: '历史记录', people: '人员管理', groups: '分组管理', positions: '岗位管理', analytics: '统计分析', rules: '排班规则', profile: '用户资料' }[activeModule]}</strong></div>
           <div className="topbar-tools">
             <Badge className={`connection-state ${day.errors.length ? 'offline' : day.loading ? 'connecting' : 'online'}`} status={day.errors.length ? 'error' : day.loading ? 'processing' : 'success'} text={day.errors.length ? '接口异常' : day.loading ? '连接中' : '已连接'} />
             <Button type="text" className="icon-button" aria-label="接口设置" icon={<Icon name="settings" />} onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }} />
@@ -1121,6 +1146,22 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                 <div className="rotation-foot"><span className="rotation-line" />不逐日手动调用轮换接口</div>
               </Card>
 
+              <Card className="person-order-card surface" size="small">
+                <div className="rail-section-heading"><div><h3>人员顺序</h3><small>过夜与推电宝轮序备注</small></div></div>
+                <div className="order-section overnight-order">
+                  <div className="order-section-heading"><Tag color="purple">过夜</Tag><small>按顺序轮换</small></div>
+                  <ol className="order-list" aria-label="过夜人员顺序">
+                    {OVERNIGHT_PERSON_ORDER.map((name, index) => <li key={name}><span className="order-index">{String(index + 1).padStart(2, '0')}</span><span>{name}</span></li>)}
+                  </ol>
+                </div>
+                <div className="order-section powerbank-order">
+                  <div className="order-section-heading"><Tag color="orange">推电宝</Tag><small>按顺序轮换</small></div>
+                  <ol className="order-list" aria-label="推电宝人员顺序">
+                    {POWER_BANK_PERSON_ORDER.map((name, index) => <li key={name}><span className="order-index">{String(index + 1).padStart(2, '0')}</span><span>{name}</span></li>)}
+                  </ol>
+                </div>
+              </Card>
+
               <Card className="quick-card surface" size="small">
                 <div className="rail-section-heading"><div><h3>快捷操作</h3><small>人员与岗位资料维护</small></div></div>
                 <div className="quick-grid"><Button icon={<Icon name="people" size={16} />} onClick={() => setActiveModule('people')}>人员管理</Button><Button icon={<Icon name="group" size={16} />} onClick={() => setActiveModule('groups')}>分组设置</Button><Button icon={<Icon name="briefcase" size={16} />} onClick={() => setActiveModule('positions')}>岗位管理</Button><Button icon={<Icon name="chart" size={16} />} onClick={() => setActiveModule('analytics')}>统计分析</Button></div>
@@ -1136,6 +1177,18 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                 template={day.template}
                 onOpenSchedule={(date, entry) => void openCalendarSchedule(date, entry)}
               />
+            : activeModule === 'history'
+              ? <ScheduleHistoryPage
+                  apiBase={apiBase}
+                  apiRequest={apiRequest}
+                  onOpenSchedule={(date, scheduleId, requirements) => void openCalendarSchedule(date, { scheduleId, requirements })}
+                  onScheduleDeleted={(entry) => {
+                    if (readCandidateMeta(entry.scheduleDate)?.scheduleId === entry.scheduleId) {
+                      localStorage.removeItem(`shiftbalance.candidate.${entry.scheduleDate}`)
+                    }
+                    if (entry.scheduleDate === selectedDate) setReloadKey((value) => value + 1)
+                  }}
+                />
             : activeModule === 'analytics'
             ? <StatisticsPage apiBase={apiBase} apiRequest={apiRequest} />
             : activeModule === 'rules'
@@ -1153,7 +1206,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                   />
                 : <ManagementPages module={activeModule} apiBase={apiBase} apiRequest={apiRequest} onDataChanged={() => setReloadKey((value) => value + 1)} />}
 
-          {activeModule !== 'home' && <footer className="page-footer"><span>ShiftBalance</span><span>{activeModule === 'schedule' ? '生成和调整后的排班需人工发布，发布后进入历史统计。' : activeModule === 'calendar' ? '轮班状态按标准模板锚点推算；排班记录显示待发布或最新已发布版本。' : activeModule === 'analytics' ? '公平次数按人员资格、组别和排班时段需求共同核算。' : activeModule === 'rules' ? '标准规则自动应用；日期例外只覆盖所选日期。' : activeModule === 'profile' ? '账号资料仅包含用户名、头像和密码。' : '管理数据与排班服务共享，并按生效日期保留人员资格和组别变更记录。'}</span><Button type="link" onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }}>API 设置 <Icon name="arrow" size={14} /></Button></footer>}
+          {activeModule !== 'home' && <footer className="page-footer"><span>ShiftBalance</span><span>{activeModule === 'schedule' ? '生成和调整后的排班需人工发布，发布后进入历史统计。' : activeModule === 'calendar' ? '轮班状态按标准模板锚点推算；排班记录显示待发布或最新已发布版本。' : activeModule === 'history' ? '删除已发布版本会同步改变历史岗位统计与公平性计算。' : activeModule === 'analytics' ? '公平次数按人员资格、组别和排班时段需求共同核算。' : activeModule === 'rules' ? '标准规则自动应用；日期例外只覆盖所选日期。' : activeModule === 'profile' ? '账号资料仅包含用户名、头像和密码。' : '管理数据与排班服务共享，并按生效日期保留人员资格和组别变更记录。'}</span><Button type="link" onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }}>API 设置 <Icon name="arrow" size={14} /></Button></footer>}
         </div>
       </main>
 
