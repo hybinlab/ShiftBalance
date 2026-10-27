@@ -575,7 +575,7 @@
   .schedule-table .time-cell small { margin: 0; }
   .schedule-table td.role-cell { min-width: 0; min-height: 41px; height: auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 5px; padding: 7px 6px; border-right: 0; }
   .schedule-table td.role-cell::before { content: attr(data-role); flex: 0 0 auto; padding-top: 4px; color: #8794a6; font-size: 11px; }
-  .schedule-table td.role-cell .chip-list { justify-content: flex-end; }
+  .schedule-table td.role-cell .chip-list { width: auto; flex: 1 1 auto; justify-content: space-around; }
   .schedule-table td.terminal-cell { display: block !important; }
   .schedule-table td.terminal-cell::before { display: block; margin-bottom: 5px; }
   .schedule-table td.terminal-cell .chip-list { justify-content: flex-start; }
@@ -693,7 +693,7 @@
 .powerbank-duty .ant-select { min-width: 138px; }
 .combined-rest-cell { display: flex; flex-direction: column; gap: 7px; }
 .meal-duty { display: flex; align-items: flex-start; gap: 3px; padding: 1px 0; }
-.meal-duty .chip-list { justify-content: flex-start; gap: 3px; }
+.meal-duty .chip-list { width: auto; flex: 1 1 auto; justify-content: space-around; gap: 3px; }
 .meal-duty .add-person-control { justify-content: flex-start; }
 .overnight-inline { display: flex; align-items: flex-start; gap: 4px; }
 .overnight-inline > .ant-tag { flex: 0 0 auto; margin: 2px 0 0; }
@@ -784,9 +784,20 @@
 .schedule-heading { padding: 14px 16px 20px; }
 .schedule-heading .eyebrow { display: none; }
 .combined-rest-cell { gap: 3px; }
-.schedule-table .ant-table-tbody > tr > td { height: 53px; padding: 4px 5px; }
+.schedule-table .ant-table-tbody > tr > td { height: auto; padding: 7px 6px; vertical-align: middle; }
 .schedule-table .ant-table-thead > tr > th { height: 56px; }
 .schedule-table .ant-table-tbody > tr.empty-candidate-row > td { height: 42px; }
+.schedule-table .ant-table-tbody > tr:not(.overnight-row):not(.powerbank-row) > td.role-cell { vertical-align: middle; }
+.schedule-table .ant-table-tbody > tr > td .chip-list { width: 100%; justify-content: space-around; align-content: space-evenly; }
+.schedule-table .ant-table-tbody > tr > td.role-cell:not(.rest-cell) .person-chip.ant-tag,
+.schedule-table .ant-table-tbody > tr.overnight-row > td.overnight-summary-cell .person-chip.ant-tag { min-height: 26px; padding: 3px 8px 3px 5px; font-size: 16px; }
+.schedule-table .ant-table-tbody > tr > td .chip-with-remove,
+.schedule-table .ant-table-tbody > tr > td .person-drag-wrap { max-width: 100%; }
+.schedule-table [data-drop-hover="true"] { outline: 2px dashed #6aa2ec; outline-offset: -3px; background-color: #eaf3ff !important; }
+.draggable-person { user-select: none; touch-action: none; cursor: grab; }
+.dragging-person-active { cursor: grabbing; }
+.drag-source { opacity: .28; }
+.person-drag-ghost { position: fixed; z-index: 1200; pointer-events: none; padding: 5px 9px; border: 1px solid #b9d4f8; border-radius: 7px; color: #286bb8; background: #eaf4ff; box-shadow: 0 5px 14px rgba(31, 67, 114, .2); font-size: 12px; white-space: nowrap; }
 .date-panel { margin: 0 0 5px; padding: 0 14px 1px; }
 .month-control { height: 27px; margin-bottom: 0; }
 .month-control .icon-button { width: 30px; height: 27px; }
@@ -856,7 +867,7 @@
   .schedule-table .time-cell strong { margin: 0; font-size: 11px; }
   .schedule-table .time-cell small { margin: 0; }
   .schedule-table .ant-table-tbody > tr > td.role-cell::before { content: attr(data-role); flex: 0 0 auto; padding-top: 4px; color: #8794a6; font-size: 11px; }
-  .schedule-table .role-cell .chip-list { justify-content: flex-end; }
+  .schedule-table .role-cell .chip-list { width: auto; flex: 1 1 auto; justify-content: space-around; }
   .schedule-table .ant-table-tbody > tr > td.terminal-cell { display: block; }
   .schedule-table .ant-table-tbody > tr > td.terminal-cell::before { display: block; margin-bottom: 5px; }
   .schedule-table .ant-table-tbody > tr > td.terminal-cell .chip-list { justify-content: flex-start; }
