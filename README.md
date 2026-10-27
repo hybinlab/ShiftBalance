@@ -35,6 +35,12 @@ docker compose down
 
 如果通过 HTTPS 反向代理对外提供服务，请将 `SHIFTBALANCE_SESSION_COOKIE_SECURE` 设为 `true`。如果通过浏览器直接跨域调用后端，再将 `SHIFTBALANCE_CORS_ALLOWED_ORIGINS` 配置为可信前端的完整来源；默认部署由 Nginx 同源转发，不需要额外开放 CORS 来源。
 
+两天排班生成会依次运行多个岗位公平性优化阶段，耗时可能超过常见反向代理的 60 秒默认超时。项目内 Nginx 已为 `/api/` 设置 240 秒代理超时；如果前面还配置了宿主机 Nginx、负载均衡器或 CDN，也需要将其读取/空闲超时设为至少 240 秒，否则仍会收到 `504 Gateway Time-out`。修改后重建前端容器：
+
+```sh
+docker compose up -d --build frontend
+```
+
 ## 数据库初始化与升级
 
 先确认 PostgreSQL 已创建 `shiftbalance` 数据库和应用角色 `shiftbalance`。运行下面的脚本只适用于**新建空数据库**，并使用拥有建表和授权权限的数据库账户执行。每个文件只执行一次，按顺序导入：
