@@ -302,6 +302,8 @@
 .bomb-chip { color: #286bb8; background: #eaf4ff; border-color: #daeaff; }
 .supervisor-chip { color: #236bc7; background: #e8f3ff; border-color: #d7eaff; }
 .terminal-chip { color: #247b65; background: #eaf7f2; border-color: #d9eee7; }
+.person-chip.ant-tag.bomb-replacement-chip { color: #875200; background: #fff0bf; border-color: #e8ad31; box-shadow: inset 0 0 0 1px rgba(199, 137, 24, .16); font-weight: 700; }
+.person-chip.ant-tag.bomb-replacement-chip small { color: #875200; opacity: 1; }
 .mezzanine-chip { color: #b77932; background: #fff5e9; border-color: #f8e9d3; }
 .flow-chip { color: #5367bf; background: #eff1ff; border-color: #e3e7ff; }
 .rest-chip { color: #5d8a70; background: #eff8f2; border-color: #e1f0e6; }

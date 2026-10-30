@@ -510,6 +510,32 @@ function reconcileTerminals(assignments: Assignment[], people: Person[]) {
   return next
 }
 
+function chooseBombReplacements(assignments: Assignment[], people: Person[]) {
+  const replacementBySlot = new Map<string, string>()
+  const original = people.find((person) => person.name === '廖家史')
+  if (!original) return replacementBySlot
+  const selectedCounts = new Map<string, number>()
+
+  // ponytail: mark a fair terminal substitute without changing the published staffing assignment.
+  for (const slotCode of ['DAY_0900_1130', 'DAY_1430_1730']) {
+    const bomb = assignments.find((item) => item.slotCode === slotCode
+      && item.positionCode === 'BOMB' && item.personIds.includes(original.id))
+    if (!bomb) continue
+    const terminal = assignments.find((item) => item.slotCode === slotCode
+      && item.groupCode === bomb.groupCode && item.positionCode === 'TERMINAL')
+    if (!terminal) continue
+    const candidates = people.filter((person) => terminal.personIds.includes(person.id) && person.enabled)
+      .sort((a, b) => ((a.historicalCounts.BOMB ?? 0) + (selectedCounts.get(a.id) ?? 0))
+        - ((b.historicalCounts.BOMB ?? 0) + (selectedCounts.get(b.id) ?? 0))
+        || a.name.localeCompare(b.name, 'zh-CN'))
+    const replacement = candidates[0]
+    if (!replacement) continue
+    selectedCounts.set(replacement.id, (selectedCounts.get(replacement.id) ?? 0) + 1)
+    replacementBySlot.set(slotCode, replacement.id)
+  }
+  return replacementBySlot
+}
+
 function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }: {
   apiBase: string
   setApiBase: (value: string) => void
@@ -681,6 +707,10 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
 
   const cycle = useMemo(() => groupForDate(selectedDate, day.template, day.groups), [selectedDate, day.template, day.groups])
   const activeAssignments = draft ?? day.assignments
+  const bombReplacementBySlot = useMemo(
+    () => chooseBombReplacements(activeAssignments, day.people),
+    [activeAssignments, day.people],
+  )
   const activePowerBankDuties = editing
     ? powerBankDraft ?? day.candidate?.powerBankDuties ?? []
     : day.candidate?.powerBankDuties ?? []
@@ -1100,7 +1130,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       title: role === 'REST'
         ? <div className="schedule-column-title rest-column-title"><span>休 / 维 / 备勤</span><Tag color="red">打饭</Tag></div>
         : role === 'TERMINAL'
-          ? <div className="schedule-column-title"><span>候机楼</span><small>{demandHeader(role, day.requirements)} · 蓝色标记负责人</small></div>
+          ? <div className="schedule-column-title"><span>候机楼</span><small>{demandHeader(role, day.requirements)} · 蓝色标记监管</small></div>
         : <div className="schedule-column-title"><span>{ROLE_LABELS[role]}</span><small>{demandHeader(role, day.requirements)}</small></div>,
       render: (_value: unknown, row: ScheduleRow) => {
         if (row.kind === 'overnight') {
@@ -1150,8 +1180,8 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
             .map((id) => ({ value: id, label: personName(id, day.people) })) ?? []
           return <>
             {terminalPeople.length ? <div className="chip-list" data-drop-assignment-key={REST_DROP_KEY} data-drop-hover={personDragTarget === REST_DROP_KEY ? 'true' : undefined}>{terminalPeople.map((id) => id === assignment.terminalSupervisorId
-              ? renderDerivedPerson(id, 'supervisor-chip', '负责人')
-              : renderDerivedPerson(id, 'terminal-chip'))}</div> : <span className="empty-mark">—</span>}
+              ? renderDerivedPerson(id, `supervisor-chip${bombReplacementBySlot.get(slot.code) === id ? ' bomb-replacement-chip' : ''}`, bombReplacementBySlot.get(slot.code) === id ? '监管 · 换廖' : '监管')
+              : renderDerivedPerson(id, `terminal-chip${bombReplacementBySlot.get(slot.code) === id ? ' bomb-replacement-chip' : ''}`, bombReplacementBySlot.get(slot.code) === id ? '换廖' : undefined))}</div> : <span className="empty-mark">—</span>}
             {editing && <small className="derived-note">按剩余在岗人员自动计算</small>}
             {editing && terminal?.personIds.length ? <div className="supervisor-select-wrap"><span>监管</span><Select aria-label={`${slot.label}监管人员`} size="small" placeholder="选择监管人员" value={terminal.terminalSupervisorId ?? undefined} options={supervisorOptions} onChange={(value) => updateDraft((items) => items.map((item) => item === terminal ? { ...item, terminalSupervisorId: value } : item))} /></div> : null}
           </>
