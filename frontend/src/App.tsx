@@ -32,6 +32,7 @@ import ScheduleCalendarPage from './ScheduleCalendarPage'
 import ScheduleHistoryPage from './ScheduleHistoryPage'
 import StatisticsPage from './StatisticsPage'
 import { groupForDate, workPeriodStartDate } from './scheduleRotation'
+import { chooseBombReplacements } from './bombReplacements'
 import './App.css'
 
 type Group = { code: string; name: string }
@@ -94,6 +95,7 @@ type ScheduleRecord = {
   }>
   powerBankDuties: PowerBankDuty[]
   requirements?: Requirement[]
+  bombReplacements?: Record<string, string>
 }
 type WorkPeriodGenerateResponse = {
   workPeriodStartDate: string
@@ -510,32 +512,6 @@ function reconcileTerminals(assignments: Assignment[], people: Person[]) {
   return next
 }
 
-function chooseBombReplacements(assignments: Assignment[], people: Person[]) {
-  const replacementBySlot = new Map<string, string>()
-  const original = people.find((person) => person.name === '廖家史')
-  if (!original) return replacementBySlot
-  const selectedCounts = new Map<string, number>()
-
-  // ponytail: mark a fair terminal substitute without changing the published staffing assignment.
-  for (const slotCode of ['DAY_0900_1130', 'DAY_1430_1730']) {
-    const bomb = assignments.find((item) => item.slotCode === slotCode
-      && item.positionCode === 'BOMB' && item.personIds.includes(original.id))
-    if (!bomb) continue
-    const terminal = assignments.find((item) => item.slotCode === slotCode
-      && item.groupCode === bomb.groupCode && item.positionCode === 'TERMINAL')
-    if (!terminal) continue
-    const candidates = people.filter((person) => terminal.personIds.includes(person.id) && person.enabled)
-      .sort((a, b) => ((a.historicalCounts.BOMB ?? 0) + (selectedCounts.get(a.id) ?? 0))
-        - ((b.historicalCounts.BOMB ?? 0) + (selectedCounts.get(b.id) ?? 0))
-        || a.name.localeCompare(b.name, 'zh-CN'))
-    const replacement = candidates[0]
-    if (!replacement) continue
-    selectedCounts.set(replacement.id, (selectedCounts.get(replacement.id) ?? 0) + 1)
-    replacementBySlot.set(slotCode, replacement.id)
-  }
-  return replacementBySlot
-}
-
 function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }: {
   apiBase: string
   setApiBase: (value: string) => void
@@ -548,6 +524,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   const [day, setDay] = useState<DayData>(EMPTY_DAY)
   const [draft, setDraft] = useState<Assignment[] | null>(null)
   const [powerBankDraft, setPowerBankDraft] = useState<PowerBankDuty[] | null>(null)
+  const [bombReplacementDraft, setBombReplacementDraft] = useState<Record<string, string> | null>(null)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [generating, setGenerating] = useState(false)
@@ -695,6 +672,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       setDay({ groups, positions, people, slots, template, requirements, candidate, assignments, messages, loading: false, errors })
       setDraft(null)
       setPowerBankDraft(null)
+      setBombReplacementDraft(null)
       setEditing(false)
       setAddKey(null)
       setNotice('')
@@ -707,9 +685,12 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
 
   const cycle = useMemo(() => groupForDate(selectedDate, day.template, day.groups), [selectedDate, day.template, day.groups])
   const activeAssignments = draft ?? day.assignments
+  const preferredBombReplacements = editing
+    ? bombReplacementDraft ?? day.candidate?.bombReplacements
+    : day.candidate?.bombReplacements
   const bombReplacementBySlot = useMemo(
-    () => chooseBombReplacements(activeAssignments, day.people),
-    [activeAssignments, day.people],
+    () => chooseBombReplacements(activeAssignments, day.people, preferredBombReplacements),
+    [activeAssignments, day.people, preferredBombReplacements],
   )
   const activePowerBankDuties = editing
     ? powerBankDraft ?? day.candidate?.powerBankDuties ?? []
@@ -771,6 +752,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     if (day.candidate?.status !== 'CANDIDATE') return
     setDraft(day.assignments.map((assignment) => ({ ...assignment, personIds: [...assignment.personIds] })))
     setPowerBankDraft((day.candidate.powerBankDuties ?? []).map((duty) => ({ ...duty })))
+    setBombReplacementDraft(Object.fromEntries(bombReplacementBySlot))
     setEditing(true)
     setNotice('')
   }
@@ -779,6 +761,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     if (editing && !(await confirmAction('取消调整', '放弃当前未保存的排班调整吗？'))) return
     setDraft(null)
     setPowerBankDraft(null)
+    setBombReplacementDraft(null)
     setEditing(false)
     setAddKey(null)
   }
@@ -817,6 +800,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       setDay((previous) => ({ ...previous, requirements: selected.requirements, candidate: record, assignments, messages: selected.schedule.messages ?? [], errors: [] }))
       setDraft(null)
       setPowerBankDraft(null)
+      setBombReplacementDraft(null)
       setEditing(false)
       setNotice(`${result.workPeriodStartDate} 至 ${result.workPeriodEndDate} 的两天排班已生成并保存为待发布版本。`)
     } catch (error) {
@@ -841,6 +825,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
             personIds: assignment.personIds,
             terminalSupervisorId: assignment.positionCode === 'TERMINAL' ? assignment.terminalSupervisorId : null,
           })),
+          bombReplacements: Object.fromEntries(bombReplacementBySlot),
           powerBankDuties: (powerBankDraft ?? []).map(({ direction, groupCode, personId }) => ({ direction, groupCode, personId })),
         }),
       })
@@ -849,6 +834,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       writeCandidateMeta(selectedDate, { scheduleId: saved.scheduleId, requirements: day.requirements })
       setDraft(null)
       setPowerBankDraft(null)
+      setBombReplacementDraft(null)
       setEditing(false)
       setAddKey(null)
       setNotice('调整已保存。')
@@ -1057,6 +1043,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     if (date === selectedDate) setReloadKey((value) => value + 1)
     setDraft(null)
     setPowerBankDraft(null)
+    setBombReplacementDraft(null)
     setEditing(false)
     setActiveModule('schedule')
   }
@@ -1183,6 +1170,19 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
               ? renderDerivedPerson(id, `supervisor-chip${bombReplacementBySlot.get(slot.code) === id ? ' bomb-replacement-chip' : ''}`, bombReplacementBySlot.get(slot.code) === id ? '监管 · 换廖' : '监管')
               : renderDerivedPerson(id, `terminal-chip${bombReplacementBySlot.get(slot.code) === id ? ' bomb-replacement-chip' : ''}`, bombReplacementBySlot.get(slot.code) === id ? '换廖' : undefined))}</div> : <span className="empty-mark">—</span>}
             {editing && <small className="derived-note">按剩余在岗人员自动计算</small>}
+            {editing && bombReplacementBySlot.has(slot.code) && <div className="supervisor-select-wrap">
+              <span>换廖</span>
+              <Select
+                aria-label={`${slot.label}换廖人员`}
+                size="small"
+                showSearch
+                optionFilterProp="label"
+                value={bombReplacementBySlot.get(slot.code)}
+                options={day.people.filter((person) => person.enabled && terminalPeople.includes(person.id))
+                  .map((person) => ({ value: person.id, label: person.name }))}
+                onChange={(value) => setBombReplacementDraft({ ...Object.fromEntries(bombReplacementBySlot), [slot.code]: value })}
+              />
+            </div>}
             {editing && terminal?.personIds.length ? <div className="supervisor-select-wrap"><span>监管</span><Select aria-label={`${slot.label}监管人员`} size="small" placeholder="选择监管人员" value={terminal.terminalSupervisorId ?? undefined} options={supervisorOptions} onChange={(value) => updateDraft((items) => items.map((item) => item === terminal ? { ...item, terminalSupervisorId: value } : item))} /></div> : null}
           </>
         }
@@ -1343,7 +1343,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                   </div>
                   <div className="version-meta">{day.candidate ? <><span>版本 {day.candidate.version}</span><span className="meta-dot">·</span><span>ID {day.candidate.scheduleId}</span></> : <span>{cycle?.isWorkday === false ? '当日无常规工作时段' : '等待生成排班'}</span>}</div>
                 </div>
-                {editing && <Alert className="editing-hint" type="info" showIcon message="编辑中：长按姓名可拖到其他岗位；拖入休 / 维 / 备勤区可移出正式岗位。过夜是独立职责，拖入或拖出不会改变同段正式岗位；推电宝可在对应组内更换。岗位仍受组别、资格和人数规则限制，候机楼人员会自动调整。" />}
+                {editing && <Alert className="editing-hint" type="info" showIcon message="编辑中：长按姓名可拖到其他岗位；拖入休 / 维 / 备勤区可移出正式岗位。过夜是独立职责，拖入或拖出不会改变同段正式岗位；推电宝可在对应组内更换。候机楼中的“换廖”人选可通过下拉框更换。岗位仍受组别、资格和人数规则限制，候机楼人员会自动调整。" />}
                 {editing && errors.length > 0 && <Alert className="validation-banner" type="error" showIcon message={`保存前需处理 ${errors.length} 项规则问题`} description={<>{errors.slice(0, 3).join('；')}{errors.length > 3 ? `；另有 ${errors.length - 3} 项` : ''}</>} />}
                 <Table<ScheduleRow> className="schedule-table" columns={scheduleColumns} dataSource={scheduleRows} rowKey="key" rowClassName={(row) => [row.kind === 'overnight' ? 'overnight-row' : row.kind === 'powerbank' ? 'powerbank-row' : '', !day.candidate ? 'empty-candidate-row' : ''].filter(Boolean).join(' ')} size="small" bordered pagination={false} tableLayout="fixed" locale={{ emptyText: emptySchedule }} />
                 {day.messages.length > 0 && <div className="solver-messages">{day.messages.map((message, index) => <p key={`${index}-${message}`}><Icon name="alert" size={15} />{message}</p>)}</div>}

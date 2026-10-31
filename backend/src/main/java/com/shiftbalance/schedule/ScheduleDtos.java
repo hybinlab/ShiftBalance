@@ -43,7 +43,8 @@ public final class ScheduleDtos {
 
     public record EditScheduleRequest(
             @NotEmpty List<@Valid ScheduleEditAssignment> assignments,
-            List<@Valid PowerBankDutyEdit> powerBankDuties) {}
+            List<@Valid PowerBankDutyEdit> powerBankDuties,
+            Map<@NotBlank String, @NotBlank String> bombReplacements) {}
 
     public record ScheduleEditAssignment(
             @NotBlank String slotCode,
@@ -126,7 +127,8 @@ public final class ScheduleDtos {
             int version,
             List<Assignment> assignments,
             List<PowerBankDuty> powerBankDuties,
-            List<StaffingRequirement> requirements) {}
+            List<StaffingRequirement> requirements,
+            Map<String, String> bombReplacements) {}
 
     public record ScheduleCalendarEntry(
             long scheduleId,

@@ -30,6 +30,7 @@ type ScheduleDetail = {
   status: string
   version: number
   requirements: Requirement[]
+  bombReplacements?: Record<string, string>
   assignments: Array<{
     slotCode: string
     slotLabel: string
@@ -225,8 +226,11 @@ export default function ScheduleHistoryPage({ apiBase, apiRequest, onOpenSchedul
       title: '安排人员',
       dataIndex: 'people',
       key: 'people',
-      render: (people: ScheduleDetail['assignments'][number]['people']) => people.length
-        ? <div className="history-person-list">{people.map((person) => <Tag key={person.id} color={person.terminalSupervisor ? 'blue' : undefined}>{person.name}{person.terminalSupervisor ? ' · 负责人' : ''}</Tag>)}</div>
+      render: (people: ScheduleDetail['assignments'][number]['people'], assignment) => people.length
+        ? <div className="history-person-list">{people.map((person) => {
+          const replacement = assignment.positionCode === 'TERMINAL' && detail?.bombReplacements?.[assignment.slotCode] === person.id
+          return <Tag key={person.id} color={replacement ? 'gold' : person.terminalSupervisor ? 'blue' : undefined}>{person.name}{person.terminalSupervisor ? ' · 监管' : ''}{replacement ? ' · 换廖' : ''}</Tag>
+        })}</div>
         : <span className="history-empty-value">—</span>,
     },
   ]

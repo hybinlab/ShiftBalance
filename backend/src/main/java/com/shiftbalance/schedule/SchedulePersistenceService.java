@@ -168,7 +168,8 @@ public class SchedulePersistenceService {
                 (rs, rowNum) -> toPowerBankDuty(rs.getString("direction"), rs.getString("group_code"),
                         Long.toString(rs.getLong("person_id")), rs.getString("person_name")), scheduleId);
         return new ScheduleResponse(scheduleId, header.scheduleDate(), header.status(), header.version(),
-                assignments, powerBankDuties, snapshotRequirements(header.configurationSnapshot()));
+                assignments, powerBankDuties, snapshotRequirements(header.configurationSnapshot()),
+                snapshotBombReplacements(header.configurationSnapshot()));
     }
 
     public List<ScheduleCalendarEntry> calendar(LocalDate startDate, LocalDate endDate) {
@@ -344,6 +345,12 @@ public class SchedulePersistenceService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "已发布排班不能直接编辑；请生成待发布新版本后再调整。");
         }
         validateEdits(header.scheduleDate(), header.configurationSnapshot(), request.assignments());
+        Map<String, String> requestedReplacements = request.bombReplacements() == null
+                ? snapshotBombReplacements(header.configurationSnapshot()) : request.bombReplacements();
+        Set<String> originalIds = requestedReplacements.isEmpty() ? Set.of() : new HashSet<>(jdbc.query(
+                "SELECT id::text FROM person WHERE name = ?", (rs, rowNum) -> rs.getString(1), "廖家史"));
+        Map<String, String> replacements = checkedBombReplacements(
+                requestedReplacements, request.assignments(), originalIds, request.bombReplacements() != null);
         if (request.powerBankDuties() != null) {
             updatePowerBankDuties(scheduleId, header.scheduleDate(), request.powerBankDuties());
         }
@@ -364,7 +371,48 @@ public class SchedulePersistenceService {
                         personIdText.equals(assignment.terminalSupervisorId()));
             }
         }
+        try {
+            // ponytail: these visual markers live in the existing version snapshot and are copied on restore.
+            jdbc.update("""
+                    UPDATE schedule
+                    SET configuration_snapshot = jsonb_set(configuration_snapshot, '{bombReplacements}', ?::jsonb)
+                    WHERE id = ?
+                    """, objectMapper.writeValueAsString(replacements), scheduleId);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("无法保存换廖人员。", exception);
+        }
         return getSchedule(scheduleId);
+    }
+
+    static Map<String, String> checkedBombReplacements(
+            Map<String, String> replacements, List<ScheduleEditAssignment> assignments,
+            Set<String> originalIds, boolean rejectInvalid) {
+        Map<String, String> valid = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : replacements.entrySet()) {
+            String slot = entry.getKey();
+            String personId = entry.getValue();
+            boolean allowed = ("DAY_0900_1130".equals(slot) || "DAY_1430_1730".equals(slot))
+                    && personId != null && !personId.isBlank()
+                    && assignments.stream().anyMatch(terminal -> terminal.slotCode().equals(slot)
+                        && terminal.positionCode().equals("TERMINAL") && terminal.personIds().contains(personId)
+                        && assignments.stream().anyMatch(bomb -> bomb.slotCode().equals(slot)
+                            && bomb.positionCode().equals("BOMB") && bomb.groupCode().equals(terminal.groupCode())
+                            && bomb.personIds().stream().anyMatch(originalIds::contains)));
+            if (allowed) valid.put(slot, personId);
+            else if (rejectInvalid) throw badRequest("换廖人选必须属于指定时段的候机楼名单，且同组防爆名单中有廖家史：" + slot);
+        }
+        return valid;
+    }
+
+    private Map<String, String> snapshotBombReplacements(String snapshot) {
+        try {
+            JsonNode replacements = objectMapper.readTree(snapshot).path("bombReplacements");
+            return replacements.isObject()
+                    ? objectMapper.convertValue(replacements, new TypeReference<Map<String, String>>() {})
+                    : Map.of();
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("无法读取换廖人员。", exception);
+        }
     }
 
     private void updatePowerBankDuties(long scheduleId, LocalDate scheduleDate, List<PowerBankDutyEdit> edits) {
