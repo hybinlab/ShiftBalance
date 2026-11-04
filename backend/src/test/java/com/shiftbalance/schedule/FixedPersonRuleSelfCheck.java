@@ -67,6 +67,7 @@ public final class FixedPersonRuleSelfCheck {
         }
 
         checkBreakfastStaffing();
+        checkMealRotation();
         checkOvernightIsAdditionalDuty();
         PowerBankRotationSelfCheck.main(new String[0]);
         System.out.println("Fixed person, three-person meal, overnight and power bank checks passed");
@@ -90,6 +91,33 @@ public final class FixedPersonRuleSelfCheck {
         }
         assert result.assignments().stream().flatMap(item -> item.people().stream()).map(person -> person.id()).distinct().count() == 8
                 : "Breakfast must cover the group without double-booking";
+    }
+
+    private static void checkMealRotation() {
+        for (int size : List.of(9, 8)) {
+            var people = IntStream.rangeClosed(1, size)
+                    .mapToObj(id -> new StaffMember(Integer.toString(id), "员工" + id, "A", true,
+                            Set.of("BOMB", "TERMINAL", "MEZZANINE", "MEAL"),
+                            Map.of("MEAL", id == 1 ? 0 : 10)))
+                    .toList();
+            var requirements = List.of(
+                    new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "A", 3, 3, null),
+                    new StaffingRequirement("DAY_1430_1730", "MEAL", "打饭", "A", 3, 3, null),
+                    new StaffingRequirement("NEXT_DAY_0530_0800", "MEAL", "打饭", "A", 3, 3, null),
+                    new StaffingRequirement("NEXT_DAY_0530_0800", "BOMB", "防爆", "A", 3, null, null),
+                    new StaffingRequirement("NEXT_DAY_0530_0800", "TERMINAL", "候机楼", "A", 1, 1, null),
+                    new StaffingRequirement("NEXT_DAY_0530_0800", "MEZZANINE", "夹层", "A", 1, 1, null));
+            var result = new ScheduleSolver().generate(new GenerateRequest(LocalDate.of(2026, 11, 4), people, requirements));
+            assert result.status().equals("OPTIMAL") || result.status().equals("FEASIBLE") : result.messages();
+            var counts = new java.util.HashMap<String, Integer>();
+            result.assignments().stream().filter(item -> item.positionCode().equals("MEAL")).forEach(item -> {
+                assert item.people().size() == 3;
+                item.people().forEach(person -> counts.merge(person.id(), 1, Integer::sum));
+            });
+            assert counts.size() == size : "Spread meals before compensating historical counts: " + counts;
+            assert counts.values().stream().mapToInt(Integer::intValue).max().orElseThrow() <= (size == 9 ? 1 : 2)
+                    : "Only unavoidable meal repeats are allowed: " + counts;
+        }
     }
 
     private static void checkOvernightIsAdditionalDuty() {

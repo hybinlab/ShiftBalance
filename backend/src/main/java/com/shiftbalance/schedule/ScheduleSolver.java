@@ -133,6 +133,23 @@ public class ScheduleSolver {
             }
         }
 
+        // Spread meals across this schedule (including next morning) before balancing historical totals.
+        // A soft objective preserves feasibility when fewer than nine people can cover three meals.
+        List<BoolVar> mealRepeats = addSamePositionRepeatModel(model, request.requirements(), assignmentVars, "MEAL");
+        if (!mealRepeats.isEmpty()) {
+            model.minimize(sum(mealRepeats));
+            CpSolver mealSolver = newSolver();
+            CpSolverStatus mealStatus = mealSolver.solve(model);
+            if (hasSolution(mealStatus)) {
+                provenOptimal &= mealStatus == CpSolverStatus.OPTIMAL;
+                selected = snapshot(mealSolver, assignmentVars);
+                selectedSupervisors = snapshotSupervisors(mealSolver, terminalSupervisorVars);
+                model.addEquality(sum(mealRepeats), selectedCount(mealSolver, mealRepeats));
+            } else {
+                provenOptimal = false;
+            }
+        }
+
         List<IntVar> fairnessVars = addFairnessModel(model, request, assignmentVars);
         if (!fairnessVars.isEmpty()) {
             model.minimize(sum(fairnessVars));
@@ -151,7 +168,7 @@ public class ScheduleSolver {
         }
 
         List<BoolVar> repeatVars = canOptimizeRepeats
-                ? addSamePositionRepeatModel(model, request.requirements(), assignmentVars)
+                ? addSamePositionRepeatModel(model, request.requirements(), assignmentVars, null)
                 : List.of();
         if (!repeatVars.isEmpty()) {
             model.minimize(sum(repeatVars));
@@ -161,6 +178,7 @@ public class ScheduleSolver {
                 provenOptimal &= repeatStatus == CpSolverStatus.OPTIMAL;
                 selected = snapshot(repeatSolver, assignmentVars);
                 selectedSupervisors = snapshotSupervisors(repeatSolver, terminalSupervisorVars);
+                model.addEquality(sum(repeatVars), selectedCount(repeatSolver, repeatVars));
             } else {
                 provenOptimal = false;
             }
@@ -644,10 +662,12 @@ public class ScheduleSolver {
     private static List<BoolVar> addSamePositionRepeatModel(
             CpModel model,
             List<StaffingRequirement> requirements,
-            Map<Integer, Map<String, BoolVar>> assignmentVars) {
+            Map<Integer, Map<String, BoolVar>> assignmentVars,
+            String positionFilter) {
         Map<GroupPosition, Map<String, List<BoolVar>>> byGroupPositionAndPerson = new LinkedHashMap<>();
         for (int i = 0; i < requirements.size(); i++) {
             StaffingRequirement requirement = requirements.get(i);
+            if (positionFilter != null && !positionFilter.equals(requirement.positionCode())) continue;
             GroupPosition key = new GroupPosition(requirement.groupCode(), requirement.positionCode());
             for (Map.Entry<String, BoolVar> entry : assignmentVars.getOrDefault(i, Map.of()).entrySet()) {
                 byGroupPositionAndPerson.computeIfAbsent(key, ignored -> new LinkedHashMap<>())
