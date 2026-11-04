@@ -208,7 +208,7 @@ export default function StatisticsPage({ apiBase, apiRequest }: Props) {
     personName: row.personName,
     positionId: null,
     positionCode: `POWER_BANK_${row.direction}`,
-    positionName: row.direction === 'TO_WAREHOUSE' ? '推电宝（送入仓库）' : '推电宝（次日推回）',
+    positionName: row.direction === 'TO_WAREHOUSE' ? '推电宝（送入仓库）' : '推电宝（早上推回）',
     groupId: row.groupId,
     groupCode: row.groupCode,
     assignmentCount: row.assignmentCount,
@@ -386,7 +386,7 @@ export default function StatisticsPage({ apiBase, apiRequest }: Props) {
         title={powerBankOnly ? '推电宝人员轮值次数' : positionId ? `${positions.find((position) => position.id === positionId)?.name ?? '岗位'}人员安排次数` : '各岗位 / 轮值安排次数'}
         extra={<Space size={10}>
           {(positionId || powerBankOnly) && <Button type="link" size="small" icon={<ArrowLeftOutlined />} onClick={() => { setPositionId(undefined); setPowerBankOnly(false) }}>返回岗位分布</Button>}
-          <span className="statistics-card-note">{powerBankOnly ? '送入与次日推回分开记录；图表合并计次' : positionId ? '按组别对比人员次数；最近日期见下表' : '按组对比；点击岗位或推电宝查看人员明细'}</span>
+          <span className="statistics-card-note">{powerBankOnly ? '送入与早上推回分开记录；图表合并计次' : positionId ? '按组别对比人员次数；最近日期见下表' : '按组对比；点击岗位或推电宝查看人员明细'}</span>
         </Space>}>
         {loading ? <Skeleton active paragraph={{ rows: 5 }} /> : chartRows.length ? <AssignmentChart
           option={chartOption}
@@ -428,7 +428,7 @@ export default function StatisticsPage({ apiBase, apiRequest }: Props) {
           })}
         </div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="所选范围内没有可比较的岗位分配" />}
       </Card> }]} />}
-      <p className="statistics-footnote">次数按每个工作日最新发布版本计数：普通岗位每个时段一次，推电宝送入仓库和次日推回分别计一次。“最近安排”显示所选范围内最近一次日期；待发布、已取消和旧发布版本不计入。推电宝按组内轮换独立统计，不计入岗位公平性比较。系统没有考勤记录，因此统计表示排班安排，不表示实际到岗。</p>
+      <p className="statistics-footnote">次数按每个工作日最新发布版本计数：普通岗位每个时段一次，推电宝送入仓库和早上推回分别计一次。“最近安排”显示所选范围内最近一次日期；待发布、已取消和旧发布版本不计入。推电宝按组内轮换独立统计，不计入岗位公平性比较。系统没有考勤记录，因此统计表示排班安排，不表示实际到岗。</p>
     </div> : <div className="statistics-schedule-view">
       <Card className="statistics-card" title="查询单次排班" extra={<span className="statistics-card-note">待发布方案可核对；历史统计只计已发布</span>}>
         <div className="schedule-lookup">

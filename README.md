@@ -64,6 +64,7 @@ DB_FILES=(
   migration_v11_user_profile.sql
   migration_v12_overnight_parallel_assignment.sql
   migration_v13_meal_three_people.sql
+  migration_v14_power_bank_same_group.sql
 )
 for file in "${DB_FILES[@]}"; do
   psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d shiftbalance -v ON_ERROR_STOP=1 -f "src/main/resources/db/$file" || exit 1
@@ -80,6 +81,15 @@ docker compose up -d --build
 ```
 
 该脚本仅更新标准模板和日期例外中的打饭人数，保留原有组别、固定人员及其他岗位配置。已有排班和历史统计保留原记录；需要使用 3 人规则的日期请重新生成排班、检查后发布。
+
+推电宝改为第一天晚下组连续承担“第一天早上、第一天晚上、第二天早上”，第二天晚上交给另一组。已有数据库部署此规则前，需在项目根目录执行 v14，再更新前后端。此迁移需表所有者或数据库管理员权限；共享数据库的表所有者为 `postgres`，应用账号 `shiftbalance` 无权修改该约束：
+
+```sh
+psql -h 192.168.31.5 -p 5432 -U postgres -d shiftbalance -v ON_ERROR_STOP=1 -f backend/src/main/resources/db/migration_v14_power_bank_same_group.sql
+docker compose up -d --build
+```
+
+v14 仅解除推电宝同一天同组只能承担一次任务的约束，保留每个方向一人的限制。两组按确认的名单逐次轮换；已有排班需要重新生成、检查后发布。
 
 ## 配置
 

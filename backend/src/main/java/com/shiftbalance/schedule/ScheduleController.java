@@ -66,6 +66,11 @@ public class ScheduleController {
         return TimeSlotCatalog.all();
     }
 
+    @GetMapping("/power-bank-order")
+    public Map<String, List<String>> powerBankOrder() {
+        return PowerBankRotation.PERSON_ORDER;
+    }
+
     @GetMapping("/calendar")
     public List<ScheduleCalendarEntry> calendar(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,

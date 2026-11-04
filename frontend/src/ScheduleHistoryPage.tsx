@@ -319,7 +319,7 @@ export default function ScheduleHistoryPage({ apiBase, apiRequest, onOpenSchedul
           {!!detail?.powerBankDuties.length && <section className="history-detail-section power-history-section">
             <div className="history-detail-section-heading"><h3>推电宝轮值</h3><span>{detail.powerBankDuties.length} 次安排</span></div>
             <div className="history-power-duties">{detail.powerBankDuties.map((duty) => <div key={duty.direction}>
-              <Tag color={duty.direction === 'TO_WAREHOUSE' ? 'orange' : 'cyan'}>{duty.direction === 'TO_WAREHOUSE' ? '晚间送入仓库' : '次日早上推回'}</Tag>
+              <Tag color={duty.direction === 'TO_WAREHOUSE' ? 'orange' : 'cyan'}>{duty.direction === 'TO_WAREHOUSE' ? '当天晚上送入仓库' : '当天早上推回'}</Tag>
               <span>{duty.groupCode}组</span><strong>{duty.personName}</strong>
             </div>)}</div>
           </section>}

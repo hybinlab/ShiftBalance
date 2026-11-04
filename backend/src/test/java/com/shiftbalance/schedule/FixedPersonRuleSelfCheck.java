@@ -68,7 +68,7 @@ public final class FixedPersonRuleSelfCheck {
 
         checkBreakfastStaffing();
         checkOvernightIsAdditionalDuty();
-        checkPowerBankRotation();
+        PowerBankRotationSelfCheck.main(new String[0]);
         System.out.println("Fixed person, three-person meal, overnight and power bank checks passed");
     }
 
@@ -116,37 +116,6 @@ public final class FixedPersonRuleSelfCheck {
                 .flatMap(item -> item.people().stream()).anyMatch(person -> person.id().equals("1"));
         if (!onBomb || !overnight) {
             throw new AssertionError("The same person should cover the formal post and overnight duty.");
-        }
-    }
-
-    private static void checkPowerBankRotation() {
-        List<StaffMember> staff = List.of(
-                person("1", "A员工一", "A"), person("2", "A员工二", "A"),
-                person("3", "B员工一", "B"), person("4", "B员工二", "B"));
-        List<GenerateRequest> requests = List.of(
-                new GenerateRequest(LocalDate.of(2026, 10, 20), staff, List.of(
-                        new StaffingRequirement("NIGHT_UNTIL_END", "OVERNIGHT", "过夜", "B", 1, 1, null),
-                        new StaffingRequirement("NIGHT_UNTIL_END", "BOMB", "防爆", "B", 3, null, null),
-                        new StaffingRequirement("NEXT_DAY_0530_0800", "BOMB", "防爆", "A", 3, null, null),
-                        new StaffingRequirement("DAY_0900_1130", "BOMB", "防爆", "A", 3, null, null))),
-                new GenerateRequest(LocalDate.of(2026, 10, 21), staff, List.of(
-                        new StaffingRequirement("NIGHT_UNTIL_END", "OVERNIGHT", "过夜", "A", 1, 1, null),
-                        new StaffingRequirement("NIGHT_UNTIL_END", "BOMB", "防爆", "A", 3, null, null),
-                        new StaffingRequirement("NEXT_DAY_0530_0800", "BOMB", "防爆", "B", 3, null, null),
-                        new StaffingRequirement("DAY_0900_1130", "BOMB", "防爆", "B", 3, null, null))));
-
-        List<List<PowerBankRotation.PlannedDuty>> plans = PowerBankRotation.plan(requests, Map.of());
-        assertDuty(plans.get(0).get(0), "TO_WAREHOUSE", "B", "3");
-        assertDuty(plans.get(0).get(1), "FROM_WAREHOUSE", "A", "1");
-        assertDuty(plans.get(1).get(0), "TO_WAREHOUSE", "A", "2");
-        assertDuty(plans.get(1).get(1), "FROM_WAREHOUSE", "B", "4");
-    }
-
-    private static void assertDuty(
-            PowerBankRotation.PlannedDuty duty, String direction, String groupCode, String personId) {
-        if (!duty.direction().equals(direction) || !duty.groupCode().equals(groupCode)
-                || !duty.personId().equals(personId)) {
-            throw new AssertionError("Unexpected power bank rotation: " + duty);
         }
     }
 

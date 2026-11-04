@@ -16,6 +16,7 @@ import com.shiftbalance.schedule.ScheduleDtos.ScheduleResponse;
 import com.shiftbalance.schedule.ScheduleDtos.ScheduleCalendarEntry;
 import com.shiftbalance.schedule.ScheduleDtos.ScheduleHistoryEntry;
 import com.shiftbalance.schedule.ScheduleDtos.StaffingRequirement;
+import com.shiftbalance.requirement.RequirementTemplateService;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -38,10 +39,12 @@ public class SchedulePersistenceService {
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
+    private final RequirementTemplateService templateService;
 
-    public SchedulePersistenceService(JdbcTemplate jdbc, ObjectMapper objectMapper) {
+    public SchedulePersistenceService(JdbcTemplate jdbc, ObjectMapper objectMapper, RequirementTemplateService templateService) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
+        this.templateService = templateService;
     }
 
     @Transactional
@@ -163,7 +166,7 @@ public class SchedulePersistenceService {
                         JOIN staff_group ON staff_group.id = duty.group_id_snapshot
                         JOIN person ON person.id = duty.person_id
                         WHERE duty.schedule_id = ?
-                        ORDER BY CASE duty.direction WHEN 'TO_WAREHOUSE' THEN 1 ELSE 2 END
+                        ORDER BY CASE duty.direction WHEN 'FROM_WAREHOUSE' THEN 1 ELSE 2 END
                         """,
                 (rs, rowNum) -> toPowerBankDuty(rs.getString("direction"), rs.getString("group_code"),
                         Long.toString(rs.getLong("person_id")), rs.getString("person_name")), scheduleId);
@@ -279,23 +282,28 @@ public class SchedulePersistenceService {
 
     private List<List<PowerBankRotation.PlannedDuty>> powerBankPlans(List<GenerateRequest> requests) {
         if (requests.isEmpty()) return List.of();
+        if (requests.stream().allMatch(request -> PowerBankRotation.lateGroupFor(request) == null)) {
+            return requests.stream().map(request -> List.<PowerBankRotation.PlannedDuty>of()).toList();
+        }
         LocalDate firstDate = requests.stream().map(GenerateRequest::scheduleDate).min(LocalDate::compareTo).orElseThrow();
-        Map<String, String> lastAssignedByGroup = jdbc.query("""
+        Map<String, String> lastAssignedNamesByGroup = jdbc.query("""
                         SELECT DISTINCT ON (staff_group.code) staff_group.code AS group_code,
-                               duty.person_id::text AS person_id
+                               person.name AS person_name
                         FROM schedule_power_bank_duty duty
                         JOIN schedule ON schedule.id = duty.schedule_id
                         JOIN staff_group ON staff_group.id = duty.group_id_snapshot
+                        JOIN person ON person.id = duty.person_id
                         WHERE schedule.status = 'PUBLISHED' AND schedule.schedule_date < ?
                           AND schedule.version = (
                               SELECT MAX(latest.version) FROM schedule latest
                               WHERE latest.schedule_date = schedule.schedule_date AND latest.status = 'PUBLISHED'
                           )
-                        ORDER BY staff_group.code, schedule.schedule_date DESC, schedule.version DESC
+                        ORDER BY staff_group.code, schedule.schedule_date DESC, schedule.version DESC,
+                                 CASE duty.direction WHEN 'TO_WAREHOUSE' THEN 1 ELSE 0 END DESC
                         """,
-                (rs, rowNum) -> Map.entry(rs.getString("group_code"), rs.getString("person_id")), firstDate)
+                (rs, rowNum) -> Map.entry(rs.getString("group_code"), rs.getString("person_name")), firstDate)
                 .stream().collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-        return PowerBankRotation.plan(requests, lastAssignedByGroup);
+        return PowerBankRotation.plan(requests, lastAssignedNamesByGroup, templateService.template().anchorWorkDate());
     }
 
     private static PowerBankDuty toPowerBankDuty(PowerBankRotation.PlannedDuty duty) {
@@ -304,7 +312,7 @@ public class SchedulePersistenceService {
 
     private static PowerBankDuty toPowerBankDuty(
             String direction, String groupCode, String personId, String personName) {
-        String slotCode = direction.equals("TO_WAREHOUSE") ? "NIGHT_UNTIL_END" : "NEXT_DAY_0530_0800";
+        String slotCode = direction.equals("TO_WAREHOUSE") ? "NIGHT_UNTIL_END" : "MORNING_0530_0800";
         return new PowerBankDuty(direction, slotCode, groupCode, personId, personName);
     }
 

@@ -132,6 +132,7 @@ type RotationTemplate = {
 type CandidateMeta = { scheduleId: number; requirements: Requirement[] }
 type DayData = {
   groups: Group[]
+  powerBankOrder: Record<string, string[]>
   positions: Position[]
   people: Person[]
   slots: TimeSlot[]
@@ -145,6 +146,7 @@ type DayData = {
 }
 
 const EMPTY_DAY: DayData = {
+  powerBankOrder: {},
   groups: [],
   positions: [],
   people: [],
@@ -178,8 +180,6 @@ const ROLE_CLASS: Record<string, string> = {
   FLOW: 'flow',
   REST: 'rest',
 }
-const OVERNIGHT_PERSON_ORDER = ['宾昕宇', '阳菲莉', '李文锦', '王小曼', '刘芳全', '黄在显', '钟绍凌', '邹运谷', '莫少波']
-const POWER_BANK_PERSON_ORDER = ['唐龙', '甘春霖', '刘雨鑫', '吕珈萱', '吴世富', '石蓉昌', '骆灿', '黄勇斌', '黎哲成']
 
 const today = toIsoDate(new Date())
 const envApiBase = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -628,6 +628,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
         apiRequest<TimeSlot[]>(apiBase, '/api/schedules/time-slots'),
         apiRequest<RotationTemplate>(apiBase, '/api/schedules/requirements-template'),
         apiRequest<Requirement[]>(apiBase, `/api/schedules/${selectedDate}/requirements`),
+        apiRequest<Record<string, string[]>>(apiBase, '/api/schedules/power-bank-order'),
       ])
       if (sequence.current !== current) return
       const errors: string[] = []
@@ -643,6 +644,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       const slots = value(3, [] as TimeSlot[], '时段')
       const template = value(4, null as RotationTemplate | null, '轮班模板')
       const currentRequirements = value(5, [] as Requirement[], '日期需求')
+      const powerBankOrder = value(6, {} as Record<string, string[]>, '推电宝轮换顺序')
       const meta = readCandidateMeta(selectedDate)
       let candidate: ScheduleRecord | null = null
       let requirements = currentRequirements
@@ -669,7 +671,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
         candidate = null
       }
       const assignments = makeAssignments(requirements, slots, candidate?.assignments)
-      setDay({ groups, positions, people, slots, template, requirements, candidate, assignments, messages, loading: false, errors })
+      setDay({ groups, powerBankOrder, positions, people, slots, template, requirements, candidate, assignments, messages, loading: false, errors })
       setDraft(null)
       setPowerBankDraft(null)
       setBombReplacementDraft(null)
@@ -1049,7 +1051,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   }
   const displayAssignments = activeAssignments
   const overnightAssignment = displayAssignments.find((assignment) => assignment.positionCode === 'OVERNIGHT')
-  const powerBankDuties = activePowerBankDuties
+  const powerBankDuties = [...activePowerBankDuties].sort((a, b) => Number(a.direction === 'TO_WAREHOUSE') - Number(b.direction === 'TO_WAREHOUSE'))
   const scheduleRows: ScheduleRow[] = [
     ...slotRows.filter((slot) => slot.dayOffset === 0).map((slot) => ({ key: slot.code, kind: 'slot' as const, slot })),
     ...(overnightAssignment ? [{ key: 'overnight', kind: 'overnight' as const, slot: null }] : []),
@@ -1127,11 +1129,11 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
         if (row.kind === 'powerbank') {
           if (role !== 'BOMB') return null
           return <div className="powerbank-row-content">{powerBankDuties.map((duty) => <div className="powerbank-duty" key={duty.direction}>
-            <Tag color={duty.direction === 'TO_WAREHOUSE' ? 'orange' : 'cyan'}>{duty.direction === 'TO_WAREHOUSE' ? '晚下组晚上送仓' : '早下组早上推回'}</Tag>
+            <Tag color={duty.direction === 'TO_WAREHOUSE' ? 'orange' : 'cyan'}>{duty.direction === 'TO_WAREHOUSE' ? '当天晚上送仓' : '当天早上推回'}</Tag>
             {editing ? <>
               <span>{groupMap.get(duty.groupCode) ?? `${duty.groupCode}组`} · {duty.direction === 'TO_WAREHOUSE' ? '19:30–结束' : '05:30–08:00'}</span>
               <Select
-                aria-label={`${duty.direction === 'TO_WAREHOUSE' ? '晚下组晚上推入仓库' : '早下组早上推回'}人员`}
+                aria-label={`${duty.direction === 'TO_WAREHOUSE' ? '当天晚上推入仓库' : '当天早上推回'}人员`}
                 size="small"
                 showSearch
                 optionFilterProp="label"
@@ -1412,19 +1414,13 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
               </Card>
 
               <Card className="person-order-card surface" size="small">
-                <div className="rail-section-heading"><div><h3>人员顺序</h3><small>过夜与推电宝轮序备注</small></div></div>
-                <div className="order-section overnight-order">
-                  <div className="order-section-heading"><Tag color="purple">过夜</Tag><small>按顺序轮换</small></div>
-                  <ol className="order-list" aria-label="过夜人员顺序">
-                    {OVERNIGHT_PERSON_ORDER.map((name, index) => <li key={name}><span className="order-index">{String(index + 1).padStart(2, '0')}</span><span>{name}</span></li>)}
+                <div className="rail-section-heading"><div><h3>推电宝人员顺序</h3><small>两组各自轮换，每次任务顺延一人</small></div></div>
+                {['B', 'A'].map((groupCode) => <div className={`order-section ${groupCode === 'B' ? 'overnight-order' : 'powerbank-order'}`} key={groupCode}>
+                  <div className="order-section-heading"><Tag color={groupCode === 'B' ? 'purple' : 'orange'}>{groupMap.get(groupCode) ?? `${groupCode}组`}</Tag><small>按顺序轮换</small></div>
+                  <ol className="order-list" aria-label={`${groupCode}组推电宝人员顺序`}>
+                    {(day.powerBankOrder[groupCode] ?? []).map((name, index) => <li key={name}><span className="order-index">{String(index + 1).padStart(2, '0')}</span><span>{name}</span></li>)}
                   </ol>
-                </div>
-                <div className="order-section powerbank-order">
-                  <div className="order-section-heading"><Tag color="orange">推电宝</Tag><small>按顺序轮换</small></div>
-                  <ol className="order-list" aria-label="推电宝人员顺序">
-                    {POWER_BANK_PERSON_ORDER.map((name, index) => <li key={name}><span className="order-index">{String(index + 1).padStart(2, '0')}</span><span>{name}</span></li>)}
-                  </ol>
-                </div>
+                </div>)}
               </Card>
 
               <Card className="quick-card surface" size="small">
