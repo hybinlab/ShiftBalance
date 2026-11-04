@@ -2,6 +2,7 @@ package com.shiftbalance.requirement;
 
 import com.shiftbalance.requirement.RequirementDtos.RequirementRequest;
 import com.shiftbalance.requirement.RequirementDtos.RequirementView;
+import com.shiftbalance.schedule.ScheduleSolver;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -59,6 +60,7 @@ public class RequirementService {
         Set<String> derivedTerminalSlots = new HashSet<>();
         Map<String, Map<String, RequirementRequest>> requirementsBySlot = new HashMap<>();
         for (RequirementRequest request : requests) {
+            ScheduleSolver.validateMealCount(request.positionCode(), request.minCount(), request.maxCount());
             if (request.maxCount() != null && request.maxCount() < request.minCount()) {
                 throw badRequest("最高人数不能低于最低人数：" + request.positionCode());
             }
@@ -117,9 +119,8 @@ public class RequirementService {
                 }
                 if (bomb.minCount() < 3 || bomb.maxCount() != null
                         || terminal.minCount() != 1 || terminal.maxCount() == null || terminal.maxCount() != 1
-                        || mezzanine.minCount() != 1 || mezzanine.maxCount() == null || mezzanine.maxCount() != 1
-                        || firstMorningSlot && (meal.minCount() != 2 || meal.maxCount() == null || meal.maxCount() != 2)) {
-                    throw badRequest("次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 2 人，剩余人员安排防爆（至少 3 人）。");
+                        || mezzanine.minCount() != 1 || mezzanine.maxCount() == null || mezzanine.maxCount() != 1) {
+                    throw badRequest("次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 3 人，剩余人员安排防爆（至少 3 人）。");
                 }
                 if (slotRequirements.values().stream().anyMatch(item -> !item.groupCode().equals(terminal.groupCode()))) {
                     throw badRequest("次日早班防爆、候机楼、夹层和打早餐必须由同一组承担。");

@@ -19,7 +19,7 @@ WITH template_rows(slot_code, position_code, group_role, min_count, max_count) A
         ('DAY_0900_1130', 'TERMINAL',   'EARLY_DOWN', 0, NULL::INTEGER),
         ('DAY_0900_1130', 'MEZZANINE', 'EARLY_DOWN', 1, 1),
         ('DAY_0900_1130', 'FLOW',       'LATE_DOWN',  2, 2),
-        ('DAY_0900_1130', 'MEAL',       'LATE_DOWN',  2, 2),
+        ('DAY_0900_1130', 'MEAL',       'LATE_DOWN',  3, 3),
 
         ('DAY_1130_1430', 'BOMB',       'LATE_DOWN',  3, NULL::INTEGER),
         ('DAY_1130_1430', 'TERMINAL',   'LATE_DOWN',  0, NULL::INTEGER),
@@ -30,7 +30,7 @@ WITH template_rows(slot_code, position_code, group_role, min_count, max_count) A
         ('DAY_1430_1730', 'TERMINAL',   'EARLY_DOWN', 0, NULL::INTEGER),
         ('DAY_1430_1730', 'MEZZANINE', 'EARLY_DOWN', 1, 1),
         ('DAY_1430_1730', 'FLOW',       'LATE_DOWN',  2, 2),
-        ('DAY_1430_1730', 'MEAL',       'LATE_DOWN',  2, 2),
+        ('DAY_1430_1730', 'MEAL',       'LATE_DOWN',  3, 3),
 
         ('DAY_1730_1930', 'BOMB',       'LATE_DOWN',  3, NULL::INTEGER),
         ('DAY_1730_1930', 'TERMINAL',   'LATE_DOWN',  0, NULL::INTEGER),
@@ -46,7 +46,7 @@ WITH template_rows(slot_code, position_code, group_role, min_count, max_count) A
         ('NEXT_DAY_0530_0800', 'BOMB',       'EARLY_DOWN', 3, NULL::INTEGER),
         ('NEXT_DAY_0530_0800', 'TERMINAL',   'EARLY_DOWN', 1, 1),
         ('NEXT_DAY_0530_0800', 'MEZZANINE', 'EARLY_DOWN', 1, 1),
-        ('NEXT_DAY_0530_0800', 'MEAL',       'EARLY_DOWN', 2, 2),
+        ('NEXT_DAY_0530_0800', 'MEAL',       'EARLY_DOWN', 3, 3),
 
         ('NEXT_DAY_0800_0900', 'BOMB',       'LATE_DOWN', 3, NULL::INTEGER),
         ('NEXT_DAY_0800_0900', 'TERMINAL',   'LATE_DOWN', 1, 1),

@@ -190,6 +190,12 @@ public class ScheduleSolver {
                 fairness);
     }
 
+    public static void validateMealCount(String positionCode, int minCount, Integer maxCount) {
+        if ("MEAL".equals(positionCode) && (minCount != 3 || maxCount == null || maxCount != 3)) {
+            throw badRequest("每次打饭必须安排 3 人，最低和最高人数均须为 3。");
+        }
+    }
+
     private static void validateConfiguration(GenerateRequest request) {
         if (request == null || request.scheduleDate() == null || request.staff() == null || request.requirements() == null) {
             throw badRequest("排班日期、人员和岗位需求不能为空。");
@@ -231,10 +237,7 @@ public class ScheduleSolver {
             if (requirement.positionCode().equals("BOMB") && requirement.minCount() < 3) {
                 throw badRequest("防爆岗位每段至少安排 3 人。");
             }
-            if (requirement.positionCode().equals("MEAL")
-                    && (requirement.minCount() != 2 || requirement.maxCount() != null && requirement.maxCount() != 2)) {
-                throw badRequest("每次打饭必须安排 2 人。");
-            }
+            validateMealCount(requirement.positionCode(), requirement.minCount(), requirement.maxCount());
             if (requirement.minCount() < 0 || requirement.maxCount() != null
                     && requirement.maxCount() < requirement.minCount()) {
                 throw badRequest("岗位需求人数范围无效：" + requirement.positionCode());
@@ -295,9 +298,8 @@ public class ScheduleSolver {
                     throw badRequest("次日早班必须包含防爆、候机楼、夹层；仅 05:30–08:00 还需打早餐。");
                 }
                 if (bomb.minCount() < 3 || bomb.maxCount() != null
-                        || mezzanine.minCount() != 1 || mezzanine.maxCount() == null || mezzanine.maxCount() != 1
-                        || firstMorningSlot && (meal.minCount() != 2 || meal.maxCount() == null || meal.maxCount() != 2)) {
-                    throw badRequest("次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 2 人，剩余人员安排防爆（至少 3 人）。");
+                        || mezzanine.minCount() != 1 || mezzanine.maxCount() == null || mezzanine.maxCount() != 1) {
+                    throw badRequest("次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 3 人，剩余人员安排防爆（至少 3 人）。");
                 }
                 if (requirements.stream().filter(item -> item.positionCode().equals("BOMB")
                                 || item.positionCode().equals("TERMINAL")

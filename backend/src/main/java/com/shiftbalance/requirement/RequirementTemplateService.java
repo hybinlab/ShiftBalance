@@ -5,6 +5,7 @@ import com.shiftbalance.requirement.RequirementDtos.RequirementTemplateUpdateReq
 import com.shiftbalance.requirement.RequirementDtos.RequirementTemplateView;
 import com.shiftbalance.requirement.RequirementDtos.RequirementView;
 import com.shiftbalance.requirement.RequirementDtos.TemplateRequirementRequest;
+import com.shiftbalance.schedule.ScheduleSolver;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -69,6 +70,7 @@ public class RequirementTemplateService {
         Map<String, Map<String, GroupRole>> rolesBySlot = new HashMap<>();
         Map<String, Map<String, TemplateRequirementRequest>> requirementsBySlot = new HashMap<>();
         for (TemplateRequirementRequest item : request.requirements()) {
+            ScheduleSolver.validateMealCount(item.positionCode(), item.minCount(), item.maxCount());
             if (item.maxCount() != null && item.maxCount() < item.minCount()) {
                 throw badRequest("最高人数不能低于最低人数：" + item.positionCode());
             }
@@ -145,9 +147,8 @@ public class RequirementTemplateService {
                 }
                 if (bomb.minCount() < 3 || bomb.maxCount() != null
                         || terminal.minCount() != 1 || terminal.maxCount() == null || terminal.maxCount() != 1
-                        || mezzanine.minCount() != 1 || mezzanine.maxCount() == null || mezzanine.maxCount() != 1
-                        || firstMorningSlot && (meal.minCount() != 2 || meal.maxCount() == null || meal.maxCount() != 2)) {
-                    throw badRequest("次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 2 人，剩余人员安排防爆（至少 3 人）。");
+                        || mezzanine.minCount() != 1 || mezzanine.maxCount() == null || mezzanine.maxCount() != 1) {
+                    throw badRequest("次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 3 人，剩余人员安排防爆（至少 3 人）。");
                 }
                 if (roles.entrySet().stream().anyMatch(entry ->
                         Set.of("BOMB", "TERMINAL", "MEZZANINE", "MEAL").contains(entry.getKey())

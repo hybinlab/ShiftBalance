@@ -57,7 +57,7 @@ const isFixedEarlyCount = (positionCode: string, slotCode: string) =>
   || slotCode === 'NEXT_DAY_0530_0800' && positionCode === 'MEAL'
 const standardCount = (positionCode: string, slotCode: string) => {
   if (positionCode === 'TERMINAL' && isFixedEarlyTerminalSlot(slotCode)) return 1
-  if (positionCode === 'MEAL') return 2
+  if (positionCode === 'MEAL') return 3
   if (positionCode === 'MEZZANINE' || positionCode === 'OVERNIGHT') return positionCode === 'MEZZANINE' ? 1 : 2
   if (positionCode === 'FLOW') return slotCode === 'NIGHT_UNTIL_END' ? 1 : 2
   return null
@@ -254,7 +254,7 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
       ...(fixedPersonId ? { minCount: Math.max(1, row.minCount) } : {}),
     })} /> },
     { title: '最低人数', dataIndex: 'minCount', width: 125, render: (value: number, row) => <Tooltip title={isDerivedTerminal(row, templateRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="标准规则最低人数" min={minimumCount(row.positionCode)} precision={0} value={value} disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, templateRows)} onChange={(minCount) => minCount !== null && updateTemplateRow(row.key, { minCount })} /></Tooltip> },
-    { title: <Tooltip title="留空代表不设上限。夹层、过夜和回流人数可按实际需要调整；防爆至少 3 人，打饭固定 2 人。">最高人数</Tooltip>, dataIndex: 'maxCount', width: 140, render: (value: number | null, row) => <Tooltip title={isDerivedTerminal(row, templateRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="标准规则最高人数" min={row.minCount} precision={0} value={value} placeholder="不限" disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, templateRows)} onChange={(maxCount) => updateTemplateRow(row.key, { maxCount: maxCount ?? null })} /></Tooltip> },
+    { title: <Tooltip title="留空代表不设上限。夹层、过夜和回流人数可按实际需要调整；防爆至少 3 人，打饭固定 3 人。">最高人数</Tooltip>, dataIndex: 'maxCount', width: 140, render: (value: number | null, row) => <Tooltip title={isDerivedTerminal(row, templateRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="标准规则最高人数" min={row.minCount} precision={0} value={value} placeholder="不限" disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, templateRows)} onChange={(maxCount) => updateTemplateRow(row.key, { maxCount: maxCount ?? null })} /></Tooltip> },
     { title: '操作', key: 'actions', width: 76, align: 'right', render: (_, row) => {
       const terminalRequired = row.positionCode === 'TERMINAL' && templateRows.some((item) => item.slotCode === row.slotCode && ['BOMB', 'MEZZANINE'].includes(item.positionCode))
       const disabled = row.positionCode === 'BOMB' || isFixedEarlyCount(row.positionCode, row.slotCode) || terminalRequired
@@ -272,7 +272,7 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
       ...(fixedPersonId ? { minCount: Math.max(1, row.minCount) } : {}),
     })} /> },
     { title: '最低人数', dataIndex: 'minCount', width: 125, render: (value: number, row) => <Tooltip title={isDerivedTerminal(row, dailyRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="日期例外最低人数" min={minimumCount(row.positionCode)} precision={0} value={value} disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, dailyRows)} onChange={(minCount) => minCount !== null && updateDailyRow(row.key, { minCount })} /></Tooltip> },
-    { title: <Tooltip title="留空代表不设上限。夹层、过夜和回流人数可按实际需要调整；防爆至少 3 人，打饭固定 2 人。">最高人数</Tooltip>, dataIndex: 'maxCount', width: 140, render: (value: number | null, row) => <Tooltip title={isDerivedTerminal(row, dailyRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="日期例外最高人数" min={row.minCount} precision={0} value={value} placeholder="不限" disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, dailyRows)} onChange={(maxCount) => updateDailyRow(row.key, { maxCount: maxCount ?? null })} /></Tooltip> },
+    { title: <Tooltip title="留空代表不设上限。夹层、过夜和回流人数可按实际需要调整；防爆至少 3 人，打饭固定 3 人。">最高人数</Tooltip>, dataIndex: 'maxCount', width: 140, render: (value: number | null, row) => <Tooltip title={isDerivedTerminal(row, dailyRows) ? '普通时段候机楼由剩余人员自动计算' : ''}><InputNumber aria-label="日期例外最高人数" min={row.minCount} precision={0} value={value} placeholder="不限" disabled={row.positionCode === 'MEAL' || isFixedEarlyCount(row.positionCode, row.slotCode) || isDerivedTerminal(row, dailyRows)} onChange={(maxCount) => updateDailyRow(row.key, { maxCount: maxCount ?? null })} /></Tooltip> },
     { title: '操作', key: 'actions', width: 76, align: 'right', render: (_, row) => {
       const terminalRequired = row.positionCode === 'TERMINAL' && dailyRows.some((item) => item.slotCode === row.slotCode && ['BOMB', 'MEZZANINE'].includes(item.positionCode))
       const disabled = row.positionCode === 'BOMB' || isFixedEarlyCount(row.positionCode, row.slotCode) || terminalRequired
@@ -294,7 +294,7 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
         fixedSeen.add(fixedKey)
       }
       if (row.positionCode === 'BOMB' && row.minCount < 3) return `${slotMap.get(row.slotCode) ?? row.slotCode}：防爆至少需要 3 人。`
-      if (row.positionCode === 'MEAL' && (row.minCount !== 2 || row.maxCount !== null && row.maxCount !== 2)) return `${slotMap.get(row.slotCode) ?? row.slotCode}：每次打饭必须安排 2 人。`
+      if (row.positionCode === 'MEAL' && (row.minCount !== 3 || row.maxCount !== 3)) return `${slotMap.get(row.slotCode) ?? row.slotCode}：每次打饭必须安排 3 人。`
       if (row.maxCount !== null && row.maxCount < row.minCount) return `${slotMap.get(row.slotCode) ?? row.slotCode}：最高人数不能低于最低人数。`
       if (isDerivedTerminal(row, rows) && (row.minCount !== 0 || row.maxCount !== null)) {
         return `${slotMap.get(row.slotCode) ?? row.slotCode}：候机楼由剩余人员自动计算，最低人数须为 0、最高人数留空。`
@@ -339,9 +339,8 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
       }
       if (bomb.minCount < 3 || bomb.maxCount !== null
           || terminal.minCount !== 1 || terminal.maxCount !== 1
-          || mezzanine.minCount !== 1 || mezzanine.maxCount !== 1
-          || slotCode === 'NEXT_DAY_0530_0800' && (meal!.minCount !== 2 || meal!.maxCount !== 2)) {
-        return '次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 2 人，剩余人员安排防爆（至少 3 人）。'
+          || mezzanine.minCount !== 1 || mezzanine.maxCount !== 1) {
+        return '次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 3 人，剩余人员安排防爆（至少 3 人）。'
       }
     }
     const configuredBombSlots = new Set(rows.filter((row) => row.positionCode === 'BOMB').map((row) => row.slotCode))
@@ -480,7 +479,7 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
             <Card className="surface rules-table-card" title="标准岗位需求" extra={<Space wrap><Button icon={<PlusOutlined />} onClick={addTemplateRow} disabled={!slots.length || !positions.length}>添加需求</Button><Button disabled={!templateDirty || !savedTemplate} onClick={() => { if (savedTemplate) { setTemplate(savedTemplate); setTemplateRows(savedTemplate.requirements.map((row) => ({ ...row, key: rowKey(row) }))) } }}>撤销修改</Button><Button type="primary" icon={<SaveOutlined />} loading={savingTemplate} disabled={!templateDirty || !templateRows.length || !groups.length || !slots.length || !positions.length} onClick={() => void saveTemplate()}>保存标准规则</Button></Space>}>
               <div className="rules-table-intro"><span>组别按“早下组 / 晚下组”配置，随轮班锚点自动映射到 A、B 组。</span><span>可选固定一名人员在指定时段执行该岗位；人员不受组别轮换影响，最高人数留空表示不设上限。</span></div>
               <Table<RequirementRow> rowKey="key" size="small" columns={templateColumns} dataSource={templateRows} pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => `共 ${total} 条规则` }} scroll={{ x: 1030 }} locale={{ emptyText: <Empty description="模板没有岗位需求，请添加后保存" /> }} />
-              <div className="rules-footnotes"><span><Tag color="blue">固定要求</Tag>防爆至少 3 人；每次打饭 2 人。</span><span>固定人员仍须符合岗位资格，同一时段不能重复安排；日期例外也可单独指定固定人员。</span><span>常规回流由轮休组承担；19:30 后回流由轮岗组承担。</span><span>次日 05:30–08:00：早下组 2 人打早餐，候机楼/负责人和夹层各 1 人，其他人员全部防爆；08:00–09:00 由另一组接班，候机楼/负责人和夹层各 1 人，其他人员全部防爆。</span><span><Tag color="orange">独立轮换</Tag>每个工作日分别安排：早下组早上推回电宝，晚下组晚上推入仓库；不占正式岗位需求、资格和岗位统计名额，轮换进度以已发布排班为准。</span></div>
+              <div className="rules-footnotes"><span><Tag color="blue">固定要求</Tag>防爆至少 3 人；每次打饭 3 人。</span><span>固定人员仍须符合岗位资格，同一时段不能重复安排；日期例外也可单独指定固定人员。</span><span>常规回流由轮休组承担；19:30 后回流由轮岗组承担。</span><span>次日 05:30–08:00：早下组 3 人打早餐，候机楼/负责人和夹层各 1 人，其他人员全部防爆；08:00–09:00 由另一组接班，候机楼/负责人和夹层各 1 人，其他人员全部防爆。</span><span><Tag color="orange">独立轮换</Tag>每个工作日分别安排：早下组早上推回电宝，晚下组晚上推入仓库；不占正式岗位需求、资格和岗位统计名额，轮换进度以已发布排班为准。</span></div>
             </Card>
           </div> : <Card className="surface"><Empty description="尚未配置标准规则模板。请检查后端数据库是否已导入排班规则模板。" /></Card>}
         </Spin> },
@@ -491,7 +490,7 @@ export default function RulesPage({ apiBase, apiRequest, onDataChanged }: Props)
               <div className="rules-table-toolbar"><span>{selectedDate} · {dailyRows.length} 项生效需求</span><Space wrap><Button onClick={addDailyRow} icon={<PlusOutlined />} disabled={!slots.length || !positions.length}>添加需求</Button><Button disabled={!dailyDirty} onClick={() => setDailyRows(savedDailyRows)}>撤销修改</Button><Popconfirm title="清除此日期的例外规则？" description="清除后将恢复标准模板；休息日没有默认岗位需求。" okText="恢复" cancelText="取消" onConfirm={() => void clearDaily()}><Button loading={clearingDaily} disabled={dailyLoading}>恢复标准模板</Button></Popconfirm><Button type="primary" icon={<SaveOutlined />} loading={savingDaily} disabled={!dailyDirty || !dailyRows.length} onClick={() => void saveDaily()}>保存当天例外</Button></Space></div>
               <Table<DailyRow> rowKey="key" size="small" columns={dailyColumns} dataSource={dailyRows} pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => `共 ${total} 项` }} scroll={{ x: 1030 }} locale={{ emptyText: <Empty description="该日期没有岗位需求；休息日通常如此，可添加例外需求" /> }} />
             </Spin>
-            <div className="rules-footnotes"><span>更改组别、需求人数或时段后，保存即覆盖当天的完整需求清单。</span><span>防爆至少 3 人；打饭必须 2 人。常规时段候机楼由剩余人员计算；次日两个早班时段固定候机楼/负责人和夹层各 1 人，其余人员排防爆。</span></div>
+            <div className="rules-footnotes"><span>更改组别、需求人数或时段后，保存即覆盖当天的完整需求清单。</span><span>防爆至少 3 人；打饭必须 3 人。常规时段候机楼由剩余人员计算；次日两个早班时段固定候机楼/负责人和夹层各 1 人，其余人员排防爆。</span></div>
           </Card>
         </div> },
       ]} />

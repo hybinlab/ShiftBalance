@@ -63,6 +63,7 @@ DB_FILES=(
   migration_v10_auth_users.sql
   migration_v11_user_profile.sql
   migration_v12_overnight_parallel_assignment.sql
+  migration_v13_meal_three_people.sql
 )
 for file in "${DB_FILES[@]}"; do
   psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d shiftbalance -v ON_ERROR_STOP=1 -f "src/main/resources/db/$file" || exit 1
@@ -70,6 +71,15 @@ done
 ```
 
 `psql` 会提示输入数据库密码。已有数据库不要重跑初始 schema 或已经应用过的迁移；只执行尚未应用的迁移文件。应用本身没有迁移记录表，部署前请由数据库维护者核对当前 schema 版本和执行记录。数据库角色还需要对这些表拥有应用运行所需的读写权限。
+
+打饭改为每次 3 人（含早餐）时，已部署到 v12 的数据库需在项目根目录执行以下升级，再更新前后端：
+
+```sh
+psql -h 192.168.31.5 -p 5432 -U shiftbalance -d shiftbalance -v ON_ERROR_STOP=1 -f backend/src/main/resources/db/migration_v13_meal_three_people.sql
+docker compose up -d --build
+```
+
+该脚本仅更新标准模板和日期例外中的打饭人数，保留原有组别、固定人员及其他岗位配置。已有排班和历史统计保留原记录；需要使用 3 人规则的日期请重新生成排班、检查后发布。
 
 ## 配置
 

@@ -3,11 +3,13 @@ package com.shiftbalance.schedule;
 import com.shiftbalance.schedule.ScheduleDtos.GenerateRequest;
 import com.shiftbalance.schedule.ScheduleDtos.StaffMember;
 import com.shiftbalance.schedule.ScheduleDtos.StaffingRequirement;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 public final class FixedPersonRuleSelfCheck {
     private FixedPersonRuleSelfCheck() {}
@@ -25,9 +27,9 @@ public final class FixedPersonRuleSelfCheck {
                         person("6", "B员工二", "B"),
                         person("7", "B员工三", "B")),
                 List.of(
-                        new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "B", 2, 2, "1"),
-                        new StaffingRequirement("DAY_1130_1430", "MEAL", "打饭", "A", 2, 2, null),
-                        new StaffingRequirement("DAY_1430_1730", "MEAL", "打饭", "B", 2, 2, "1")));
+                        new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "B", 3, 3, "1"),
+                        new StaffingRequirement("DAY_1130_1430", "MEAL", "打饭", "A", 3, 3, null),
+                        new StaffingRequirement("DAY_1430_1730", "MEAL", "打饭", "B", 3, 3, "1")));
 
         var result = new ScheduleSolver().generate(request);
         if (!result.status().equals("OPTIMAL") && !result.status().equals("FEASIBLE")) {
@@ -49,9 +51,45 @@ public final class FixedPersonRuleSelfCheck {
         if (otherSlot.people().stream().anyMatch(person -> person.id().equals("1"))) {
             throw new AssertionError("Fixed person was assigned outside the configured slot.");
         }
+        assert result.assignments().stream().allMatch(item -> item.people().size() == 3)
+                : "Every meal assignment must contain exactly three people";
 
+        for (StaffingRequirement invalid : List.of(
+                new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "A", 2, 2, null),
+                new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "A", 3, 4, null),
+                new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "A", 3, null, null))) {
+            try {
+                new ScheduleSolver().generate(new GenerateRequest(request.scheduleDate(), request.staff(), List.of(invalid)));
+                throw new AssertionError("Meal counts other than exactly three should be rejected");
+            } catch (ResponseStatusException exception) {
+                assert exception.getStatusCode().value() == 400;
+            }
+        }
+
+        checkBreakfastStaffing();
         checkOvernightIsAdditionalDuty();
         checkPowerBankRotation();
+        System.out.println("Fixed person, three-person meal, overnight and power bank checks passed");
+    }
+
+    private static void checkBreakfastStaffing() {
+        var people = IntStream.rangeClosed(1, 8)
+                .mapToObj(id -> personWithPositions(Integer.toString(id), "员工" + id, "A",
+                        Set.of("BOMB", "TERMINAL", "MEZZANINE", "MEAL")))
+                .toList();
+        var requirements = List.of(
+                new StaffingRequirement("NEXT_DAY_0530_0800", "BOMB", "防爆", "A", 3, null, null),
+                new StaffingRequirement("NEXT_DAY_0530_0800", "TERMINAL", "候机楼", "A", 1, 1, null),
+                new StaffingRequirement("NEXT_DAY_0530_0800", "MEZZANINE", "夹层", "A", 1, 1, null),
+                new StaffingRequirement("NEXT_DAY_0530_0800", "MEAL", "打饭", "A", 3, 3, null));
+        var result = new ScheduleSolver().generate(new GenerateRequest(LocalDate.of(2026, 11, 4), people, requirements));
+        assert result.status().equals("OPTIMAL") || result.status().equals("FEASIBLE") : result.messages();
+        for (var assignment : result.assignments()) {
+            int expected = Set.of("BOMB", "MEAL").contains(assignment.positionCode()) ? 3 : 1;
+            assert assignment.people().size() == expected : assignment;
+        }
+        assert result.assignments().stream().flatMap(item -> item.people().stream()).map(person -> person.id()).distinct().count() == 8
+                : "Breakfast must cover the group without double-booking";
     }
 
     private static void checkOvernightIsAdditionalDuty() {
