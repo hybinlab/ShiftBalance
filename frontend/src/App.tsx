@@ -33,11 +33,12 @@ import ScheduleHistoryPage from './ScheduleHistoryPage'
 import StatisticsPage from './StatisticsPage'
 import { groupForDate, workPeriodStartDate } from './scheduleRotation'
 import { chooseBombReplacements } from './bombReplacements'
+import { downloadScheduleImage } from './scheduleImage'
 import './App.css'
 
 type Group = { code: string; name: string }
 type Position = { code: string; name: string }
-type Person = {
+export type Person = {
   id: string
   name: string
   groupCode: string
@@ -78,7 +79,7 @@ type Assignment = {
   personIds: string[]
   terminalSupervisorId: string | null
 }
-type ScheduleRecord = {
+export type ScheduleRecord = {
   scheduleId: number
   scheduleDate: string
   status: string
@@ -529,6 +530,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   const [saving, setSaving] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [addKey, setAddKey] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [activeModule, setActiveModule] = useState<AppModule>('home')
@@ -847,6 +849,19 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     }
   }
 
+  const exportImage = async (record: ScheduleRecord, automatic = false) => {
+    setExporting(true)
+    try {
+      const rotation = groupForDate(record.scheduleDate, day.template, day.groups)
+      await downloadScheduleImage(record, day.people, rotation?.isWorkday ? `${rotation.early}组早下 · ${rotation.late}组晚下` : '当日排班')
+      setNotice(automatic ? '排班已发布，PNG 图片已生成并发起下载。' : 'PNG 图片已生成并发起下载。')
+    } catch (error) {
+      setNotice(`排班已发布，图片导出失败：${error instanceof Error ? error.message : '请重试'}。可点击“导出 PNG”重新下载。`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const publish = async () => {
     const candidate = day.candidate
     if (candidate?.status !== 'CANDIDATE' || editing) return
@@ -858,7 +873,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       const published = await apiRequest<ScheduleRecord>(apiBase, `/api/schedules/${candidate.scheduleId}/publish`, { method: 'POST' })
       if (sequence.current !== requestSequence) return
       setDay((previous) => ({ ...previous, candidate: published }))
-      setNotice('排班已发布，已纳入历史统计和后续公平性计算。')
+      await exportImage(published, true)
       try {
         const people = await apiRequest<Person[]>(apiBase, `/api/people?asOf=${selectedDate}`)
         if (sequence.current === requestSequence) setDay((previous) => ({ ...previous, people }))
@@ -1303,7 +1318,10 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                       <Button className="button button-primary" type="primary" disabled={saving || publishing || errors.length > 0} loading={publishing} onClick={() => void publish()} icon={<Icon name="check" size={17} />}>{publishing ? '发布中…' : '发布当前排班'}</Button>
                     </>
                   ) : day.candidate?.status === 'PUBLISHED' ? (
-                    <Button className="button button-primary" type="primary" disabled={generating || day.loading || cycle?.isWorkday === false} loading={generating} onClick={() => void generate()} icon={<Icon name="spark" size={17} />}>{generating ? '生成中…' : '生成新版本'}</Button>
+                    <>
+                      <Button className="button button-quiet" loading={exporting} disabled={day.loading || publishing || generating} onClick={() => { if (day.candidate) void exportImage(day.candidate) }}>导出 PNG</Button>
+                      <Button className="button button-primary" type="primary" disabled={generating || publishing || exporting || day.loading || cycle?.isWorkday === false} loading={generating} onClick={() => void generate()} icon={<Icon name="spark" size={17} />}>{generating ? '生成中…' : '生成新版本'}</Button>
+                    </>
                   ) : (
                     <Button className="button button-primary" type="primary" disabled={generating || day.loading || cycle?.isWorkday === false || day.requirements.length === 0} loading={generating} onClick={() => void generate()} icon={<Icon name="spark" size={17} />}>{generating ? '生成中…' : '生成两天排班'}</Button>
                   )}
