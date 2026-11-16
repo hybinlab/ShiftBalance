@@ -5,7 +5,9 @@ import com.shiftbalance.requirement.RequirementDtos.RequirementTemplateUpdateReq
 import com.shiftbalance.requirement.RequirementDtos.RequirementTemplateView;
 import com.shiftbalance.requirement.RequirementDtos.RequirementView;
 import com.shiftbalance.requirement.RequirementDtos.TemplateRequirementRequest;
-import com.shiftbalance.schedule.ScheduleSolver;
+import com.shiftbalance.schedule.SchedulingRules;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -14,8 +16,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
-import java.time.temporal.ChronoUnit;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -24,9 +24,11 @@ import java.util.Set;
 @Service
 public class RequirementTemplateService {
     private final JdbcTemplate jdbc;
+    private final ObjectMapper mapper;
 
-    public RequirementTemplateService(JdbcTemplate jdbc) {
+    public RequirementTemplateService(JdbcTemplate jdbc, ObjectMapper mapper) {
         this.jdbc = jdbc;
+        this.mapper = mapper;
     }
 
     public RequirementTemplateView template() {
@@ -52,7 +54,7 @@ public class RequirementTemplateService {
                         GroupRole.valueOf(rs.getString("group_role")),
                         rs.getInt("min_required_count"), (Integer) rs.getObject("max_required_count"),
                         rs.getString("fixed_person_id")));
-        return new RequirementTemplateView(anchor.anchorWorkDate(), anchor.firstEarlyDownGroup(), requirements);
+        return new RequirementTemplateView(anchor.anchorWorkDate(), anchor.firstEarlyDownGroup(), rules(), requirements);
     }
 
     @Transactional
@@ -64,99 +66,40 @@ public class RequirementTemplateService {
             throw badRequest("轮班模板需要恰好两个启用的组别。");
         }
 
+        SchedulingRules rules = request.rules();
+        rules.validate();
+        validateRulePeople(rules, enabledGroups);
+        jdbc.queryForList("SELECT singleton FROM schedule_rotation_config WHERE singleton FOR UPDATE");
+        // Keep archived slot rows for historical foreign keys; active order and labels live in the snapshot.
+        for (SchedulingRules.Slot slot : rules.slots()) {
+            jdbc.update("""
+                    INSERT INTO time_slot (code, sequence_no, label, start_time, end_time, day_offset, end_type)
+                    VALUES (?, (SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM time_slot), ?, ?::time, ?::time, ?, ?)
+                    ON CONFLICT (code) DO UPDATE SET label = EXCLUDED.label, start_time = EXCLUDED.start_time,
+                        end_time = EXCLUDED.end_time, day_offset = EXCLUDED.day_offset, end_type = EXCLUDED.end_type
+                    """, slot.code(), slot.label(), slot.start(), slot.end(), slot.dayOffset(),
+                    slot.end() == null ? "FLIGHT_END" : "FIXED");
+        }
         Set<String> keys = new HashSet<>();
         Set<String> fixedPeopleBySlot = new HashSet<>();
-        Set<String> derivedTerminalSlots = new HashSet<>();
-        Map<String, Map<String, GroupRole>> rolesBySlot = new HashMap<>();
-        Map<String, Map<String, TemplateRequirementRequest>> requirementsBySlot = new HashMap<>();
         for (TemplateRequirementRequest item : request.requirements()) {
-            ScheduleSolver.validateMealCount(item.positionCode(), item.minCount(), item.maxCount());
-            if (item.maxCount() != null && item.maxCount() < item.minCount()) {
-                throw badRequest("最高人数不能低于最低人数：" + item.positionCode());
-            }
-            if (item.slotCode().equals("NEXT_DAY_0800_0900")
-                    && item.groupRole() != GroupRole.LATE_DOWN) {
-                throw badRequest("次日 08:00–09:00 由另一组上岗，用餐切换时段必须设置为 LATE_DOWN。");
-            }
-            if (item.slotCode().equals("NEXT_DAY_0530_0800") && item.groupRole() != GroupRole.EARLY_DOWN) {
-                throw badRequest("次日 05:30–08:00 由早下组上岗，必须设置为 EARLY_DOWN。");
-            }
-            if (!keys.add(item.slotCode() + "\u0000" + item.positionCode())) {
-                throw badRequest("同一时段同一岗位不能重复：" + item.slotCode() + " / " + item.positionCode());
-            }
-            requireExists("time_slot", "code", item.slotCode(), "时间段", false);
+            if (rules.slot(item.slotCode()) == null) throw badRequest("需求引用了已移除的时段：" + item.slotCode());
+            if (item.positionCode().equals("LEADER")) throw badRequest("监管请在候机楼规则中配置。");
+            if (item.maxCount() != null && item.maxCount() < item.minCount()) throw badRequest("最高人数不能低于最低人数。");
+            if (!keys.add(item.slotCode() + ":" + item.positionCode())) throw badRequest("同一时段同一岗位不能重复。");
             enabledId("job_position", item.positionCode(), "岗位");
             if (item.fixedPersonId() != null) {
-                if (item.maxCount() != null && item.maxCount() < 1) {
-                    throw badRequest("固定人员会占用一个岗位名额，最高人数不能设为 0。");
-                }
+                if (item.maxCount() != null && item.maxCount() < 1) throw badRequest("固定人员需要一个岗位名额。");
                 validateFixedPerson(item.fixedPersonId(), item.positionCode());
-                if (!fixedPeopleBySlot.add(item.slotCode() + "\u0000" + item.fixedPersonId())) {
-                    throw badRequest("同一时段不能把同一人员固定到多个岗位：" + item.fixedPersonId());
-                }
-            }
-            if ((item.positionCode().equals("BOMB") || item.positionCode().equals("MEZZANINE"))
-                    && !isFixedEarlyTerminalSlot(item.slotCode())) {
-                derivedTerminalSlots.add(item.slotCode());
-            }
-            rolesBySlot.computeIfAbsent(item.slotCode(), ignored -> new HashMap<>())
-                    .put(item.positionCode(), item.groupRole());
-            requirementsBySlot.computeIfAbsent(item.slotCode(), ignored -> new HashMap<>())
-                    .put(item.positionCode(), item);
-        }
-        for (TemplateRequirementRequest item : request.requirements()) {
-            if (item.positionCode().equals("TERMINAL") && derivedTerminalSlots.contains(item.slotCode())
-                    && (item.minCount() != 0 || item.maxCount() != null)) {
-                throw badRequest("%s 的候机楼人数由其余岗位分配后自动计算，最低人数设为 0、最高人数留空。"
-                        .formatted(item.slotCode()));
+                if (!item.positionCode().equals("OVERNIGHT") && !fixedPeopleBySlot.add(item.slotCode() + ":" + item.fixedPersonId()))
+                    throw badRequest("同一时段不能把同一人员固定到多个正式岗位。");
             }
         }
-        rolesBySlot.forEach((slotCode, roles) -> {
-            GroupRole bombRole = roles.get("BOMB");
-            GroupRole flowRole = roles.get("FLOW");
-            GroupRole terminalRole = roles.get("TERMINAL");
-            GroupRole mezzanineRole = roles.get("MEZZANINE");
-            if ((bombRole != null || mezzanineRole != null) && terminalRole == null) {
-                throw badRequest("%s 配置了防爆或夹层时，还必须配置候机楼岗位。".formatted(slotCode));
-            }
-            if (terminalRole != null && (bombRole != null && terminalRole != bombRole
-                    || mezzanineRole != null && terminalRole != mezzanineRole)) {
-                throw badRequest("%s 的防爆、夹层和候机楼必须属于同一组。".formatted(slotCode));
-            }
-            if (bombRole != null && flowRole != null) {
-                GroupRole expectedFlowRole = slotCode.equals("NIGHT_UNTIL_END")
-                        ? bombRole
-                        : bombRole == GroupRole.EARLY_DOWN ? GroupRole.LATE_DOWN : GroupRole.EARLY_DOWN;
-                if (flowRole != expectedFlowRole) {
-                    throw badRequest("%s 的回流组别应根据上岗组自动交替：常规时段取轮休组，19:30 后取轮岗组。"
-                            .formatted(slotCode));
-                }
-            }
-            if (isFixedEarlyTerminalSlot(slotCode)) {
-                TemplateRequirementRequest bomb = requirementsBySlot.get(slotCode).get("BOMB");
-                TemplateRequirementRequest terminal = requirementsBySlot.get(slotCode).get("TERMINAL");
-                TemplateRequirementRequest mezzanine = requirementsBySlot.get(slotCode).get("MEZZANINE");
-                TemplateRequirementRequest meal = requirementsBySlot.get(slotCode).get("MEAL");
-                boolean firstMorningSlot = slotCode.equals("NEXT_DAY_0530_0800");
-                GroupRole expectedRole = firstMorningSlot ? GroupRole.EARLY_DOWN : GroupRole.LATE_DOWN;
-                if (bomb == null || terminal == null || mezzanine == null
-                        || firstMorningSlot && meal == null || !firstMorningSlot && meal != null
-                        || roles.keySet().stream().anyMatch(position ->
-                        !Set.of("BOMB", "TERMINAL", "MEZZANINE", "MEAL").contains(position))) {
-                    throw badRequest("次日早班必须包含防爆、候机楼、夹层；仅 05:30–08:00 还需配置打早餐。");
-                }
-                if (bomb.minCount() < 3 || bomb.maxCount() != null
-                        || terminal.minCount() != 1 || terminal.maxCount() == null || terminal.maxCount() != 1
-                        || mezzanine.minCount() != 1 || mezzanine.maxCount() == null || mezzanine.maxCount() != 1) {
-                    throw badRequest("次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 3 人，剩余人员安排防爆（至少 3 人）。");
-                }
-                if (roles.entrySet().stream().anyMatch(entry ->
-                        Set.of("BOMB", "TERMINAL", "MEZZANINE", "MEAL").contains(entry.getKey())
-                                && entry.getValue() != expectedRole)) {
-                    throw badRequest("次日早班的岗位必须由轮班规则指定的上岗组承担。");
-                }
-            }
-        });
+        for (SchedulingRules.Slot slot : rules.slots()) {
+            if (!slot.remainderPosition().isEmpty() && request.requirements().stream().anyMatch(r -> r.slotCode().equals(slot.code()))
+                    && request.requirements().stream().noneMatch(r -> r.slotCode().equals(slot.code()) && r.positionCode().equals(slot.remainderPosition())))
+                throw badRequest(slot.label() + "：请配置接收剩余人员的岗位，或关闭自动分配。");
+        }
 
         jdbc.update("""
                         INSERT INTO schedule_rotation_config
@@ -168,6 +111,9 @@ public class RequirementTemplateService {
                             updated_at = CURRENT_TIMESTAMP
                         """,
                 request.anchorWorkDate(), firstEarlyDownGroupId);
+        try {
+            jdbc.update("UPDATE schedule_rotation_config SET rules = ?::jsonb WHERE singleton", mapper.writeValueAsString(rules));
+        } catch (JsonProcessingException e) { throw new IllegalStateException("无法保存业务规则", e); }
         jdbc.update("DELETE FROM schedule_requirement_template");
         for (TemplateRequirementRequest item : request.requirements()) {
             jdbc.update("""
@@ -188,15 +134,8 @@ public class RequirementTemplateService {
             return List.of();
         }
 
-        long dayOffset = ChronoUnit.DAYS.between(anchor.anchorWorkDate(), date);
-        // ponytail: derive the 2-on/2-off cycle from one anchor; replace this fixed cycle with a work calendar if exceptions are introduced.
-        int dayInCycle = (int) Math.floorMod(dayOffset, 4);
-        if (dayInCycle >= 2) {
-            return List.of();
-        }
-        long workdayIndex = Math.floorDiv(dayOffset, 4) * 2 + dayInCycle;
-        long rotationIndex = Math.floorMod(workdayIndex, 4);
-
+        SchedulingRules rules = rules();
+        if (!rules.workday(anchor.anchorWorkDate(), date)) return List.of();
         List<String> enabledGroups = jdbc.query("SELECT code FROM staff_group WHERE enabled ORDER BY code",
                 (rs, rowNum) -> rs.getString("code"));
         if (enabledGroups.size() != 2) {
@@ -205,7 +144,7 @@ public class RequirementTemplateService {
         String firstEarlyGroup = anchor.firstEarlyDownGroup();
         String otherGroup = enabledGroups.stream().filter(code -> !code.equals(firstEarlyGroup)).findFirst()
                 .orElseThrow(() -> badRequest("轮班锚点组别未启用或不在当前组别中。"));
-        String earlyGroup = rotationIndex == 0 || rotationIndex == 3 ? firstEarlyGroup : otherGroup;
+        String earlyGroup = rules.day(anchor.anchorWorkDate(), date).earlyGroup().equals("FIRST") ? firstEarlyGroup : otherGroup;
         String lateGroup = earlyGroup.equals(firstEarlyGroup) ? otherGroup : firstEarlyGroup;
 
         List<RequirementView> resolved = jdbc.query("""
@@ -226,9 +165,10 @@ public class RequirementTemplateService {
                         rs.getInt("min_required_count"),
                         (Integer) rs.getObject("max_required_count"),
                         rs.getString("fixed_person_id")));
-        // ponytail: the opposite group takes over 08:00–09:00 only after the first workday.
+        // Optional handoff slots follow the configured next-day work status.
         return resolved.stream()
-                .filter(item -> !item.slotCode().equals("NEXT_DAY_0800_0900") || dayInCycle == 0)
+                .filter(item -> rules.slot(item.slotCode()) != null)
+                .filter(item -> !rules.slot(item.slotCode()).onlyBeforeWorkday() || rules.workday(anchor.anchorWorkDate(), date.plusDays(1)))
                 .toList();
     }
 
@@ -237,11 +177,53 @@ public class RequirementTemplateService {
         if (anchor == null) {
             throw notFound("尚未配置排班模板和轮班锚点。");
         }
-        int dayInCycle = (int) Math.floorMod(ChronoUnit.DAYS.between(anchor.anchorWorkDate(), date), 4);
-        if (dayInCycle >= 2) {
-            throw badRequest("所选日期是休息日，请选择上班日生成两天排班。");
+        SchedulingRules rules = rules();
+        if (!rules.workday(anchor.anchorWorkDate(), date)) throw badRequest("所选日期是休息日，请选择工作日。");
+        LocalDate start = date;
+        while (rules.workday(anchor.anchorWorkDate(), start.minusDays(1))) start = start.minusDays(1);
+        return start;
+    }
+
+    public List<LocalDate> workPeriodDates(LocalDate date) {
+        LocalDate start = workPeriodStartDate(date);
+        SchedulingRules rules = rules();
+        LocalDate anchor = rotationAnchor().anchorWorkDate();
+        java.util.ArrayList<LocalDate> dates = new java.util.ArrayList<>();
+        for (LocalDate day = start; rules.workday(anchor, day); day = day.plusDays(1)) dates.add(day);
+        return dates;
+    }
+
+    public SchedulingRules rules() {
+        String json = jdbc.query("SELECT COALESCE(rules::text, '') FROM schedule_rotation_config WHERE singleton",
+                (rs, row) -> rs.getString(1)).stream().findFirst().orElse(null);
+        try { return json == null || json.isEmpty() ? defaultRules() : mapper.readValue(json, SchedulingRules.class); }
+        catch (JsonProcessingException e) { throw new IllegalStateException("无法读取业务规则", e); }
+    }
+
+    private SchedulingRules defaultRules() {
+        var node = mapper.valueToTree(SchedulingRules.defaults());
+        var object = (com.fasterxml.jackson.databind.node.ObjectNode) node;
+        Map<String, List<String>> orders = new java.util.LinkedHashMap<>();
+        Map<String, List<String>> names = Map.of(
+                "A", List.of("唐龙", "甘春霖", "刘雨鑫", "吕珈萱", "吴世富", "石蓉昌", "骆灿", "黄勇斌", "黎哲成"),
+                "B", List.of("宾昕宇", "阳菲莉", "李文锦", "王小曼", "刘芳全", "黄在显", "钟绍凌", "邹运谷", "莫少波"));
+        names.forEach((group, list) -> orders.put(group, list.stream().flatMap(name -> jdbc.query(
+                "SELECT id::text FROM person WHERE name = ? ORDER BY id LIMIT 1", (rs, row) -> rs.getString(1), name).stream()).toList()));
+        object.set("powerBankOrder", mapper.valueToTree(orders));
+        jdbc.query("SELECT id::text FROM person WHERE name = '廖家史' ORDER BY id LIMIT 1", (rs, row) -> rs.getString(1))
+                .stream().findFirst().ifPresent(id -> object.put("replacementPersonId", id));
+        return mapper.convertValue(object, SchedulingRules.class);
+    }
+
+    private void validateRulePeople(SchedulingRules rules, List<String> groups) {
+        for (var entry : rules.powerBankOrder().entrySet()) {
+            if (!groups.contains(entry.getKey())) throw badRequest("推电宝名单引用了未启用的组别。");
+            for (String id : entry.getValue()) requireExists("person", "id", parseFixedPersonId(id).toString(), "人员", false);
         }
-        return date.minusDays(dayInCycle);
+        if (rules.replacementEnabled() && rules.replacementPersonId() == null) throw badRequest("启用替岗标记时请选择被替岗人员。");
+        if (rules.replacementPersonId() != null) requireExists("person", "id", parseFixedPersonId(rules.replacementPersonId()).toString(), "替岗人员", false);
+        if (rules.powerBankEnabled() && groups.stream().anyMatch(group -> rules.powerBankOrder().getOrDefault(group, List.of()).isEmpty()))
+            throw badRequest("启用推电宝时，每个组至少配置一名轮换人员。");
     }
 
     private TemplateAnchor rotationAnchor() {
@@ -271,7 +253,7 @@ public class RequirementTemplateService {
     private void requireExists(String table, String column, String code, String label, boolean enabledOnly) {
         try {
             String enabledClause = enabledOnly ? " AND enabled" : "";
-            jdbc.queryForObject("SELECT 1 FROM " + table + " WHERE " + column + " = ?" + enabledClause,
+            jdbc.queryForObject("SELECT 1 FROM " + table + " WHERE " + column + "::text = ?" + enabledClause,
                     Integer.class, code);
         } catch (EmptyResultDataAccessException exception) {
             throw badRequest("未知" + label + "编码：" + code);
@@ -310,9 +292,6 @@ public class RequirementTemplateService {
         }
     }
 
-    private static boolean isFixedEarlyTerminalSlot(String slotCode) {
-        return slotCode.equals("NEXT_DAY_0530_0800") || slotCode.equals("NEXT_DAY_0800_0900");
-    }
 
     private static ResponseStatusException badRequest(String message) {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);

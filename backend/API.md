@@ -22,17 +22,17 @@
 | PUT | `/api/people/{id}?asOf=日期` | 修改人员姓名、启用状态、备注，并可选修改组别和岗位资格 |
 | GET | `/api/v1/statistics/person-position-assignments` | 查询历史人员/岗位分配次数及公平性统计 |
 | GET | `/api/v1/statistics/position-distribution` | 汇总各组各岗位的分配分布和次数差异 |
-| GET | `/api/schedules/time-slots` | 查询固定时段 |
+| GET | `/api/schedules/time-slots` | 查询已配置时段 |
 | GET | `/api/schedules/calendar?startDate=2026-10-01&endDate=2026-11-11` | 查询日期范围内最新的待发布或已发布排班 |
 | GET | `/api/schedules/requirements-template` | 查询标准岗位需求模板和轮班锚点 |
-| PUT | `/api/schedules/requirements-template` | 一次性保存标准需求模板和轮班锚点 |
+| PUT | `/api/schedules/requirements-template` | 一次性保存标准需求、轮班锚点及完整 rules |
 | GET | `/api/schedules/{date}/requirements` | 查询指定日期岗位需求 |
 | PUT | `/api/schedules/{date}/requirements` | 整体覆盖指定日期岗位需求 |
 | DELETE | `/api/schedules/{date}/requirements` | 清除指定日期覆盖并恢复标准模板 |
 | POST | `/api/schedules/generate` | 用请求中的人员和需求直接求解，不写入数据库 |
 | POST | `/api/schedules/generate-from-personnel` | 从数据库读取人员，使用请求中的需求并保存排班 |
 | POST | `/api/schedules/generate-from-database` | 从数据库读取人员和指定日期需求并保存排班 |
-| POST | `/api/schedules/generate-work-period-from-database` | 根据上二休二周期一次生成并保存连续两个工作日的排班 |
+| POST | `/api/schedules/generate-work-period-from-database` | 根据已配置周期生成并保存连续工作日的排班 |
 | GET | `/api/schedules/{scheduleId}` | 查询已保存排班及当前岗位人员 |
 | PUT | `/api/schedules/{scheduleId}` | 调整已生成排班的岗位人员 |
 | POST | `/api/schedules/{scheduleId}/publish` | 人工确认并发布待确认排班 |
@@ -97,11 +97,11 @@ X-CSRF-TOKEN: <csrfToken>
 
 `GET /api/groups` 和 `GET /api/positions` 返回数组，元素包含 `id`、`code`、`name`。`id` 可用于统计接口筛选。岗位编码为：`MEAL` 打饭、`OVERNIGHT` 过夜、`BOMB` 防爆、`TERMINAL` 候机楼、`MEZZANINE` 夹层、`FLOW` 回流/拉包。历史 `LEADER` 编码已停用；负责人从候机楼已排人员中标记，不单独占岗位名额。
 
-`GET /api/schedules/time-slots` 返回 `{ "code", "sequence", "label", "dayOffset" }` 数组。固定编码为 `DAY_0900_1130`、`DAY_1130_1430`、`DAY_1430_1730`、`DAY_1730_1930`、`NIGHT_UNTIL_END`、`NEXT_DAY_0530_0800`、`NEXT_DAY_0800_0900`。`dayOffset: 1` 表示次日时段；`NIGHT_UNTIL_END` 表示 19:30 至航班结束。
+`GET /api/schedules/time-slots` 返回 `{ "code", "sequence", "label", "dayOffset" }` 数组。初始默认编码为 `DAY_0900_1130`、`DAY_1130_1430`、`DAY_1430_1730`、`DAY_1730_1930`、`NIGHT_UNTIL_END`、`NEXT_DAY_0530_0800`、`NEXT_DAY_0800_0900`。`dayOffset: 1` 表示次日时段；`NIGHT_UNTIL_END` 表示 19:30 至航班结束。
 
 ## 人员
 
-`GET /api/people` 的 `asOf` 可选，缺省为中国时区当天。返回元素包含 `id`、`name`、`groupCode`、`enabled`、`remark`、`qualifiedPositionCodes`、`historicalCounts`。资格和组别按 `asOf` 查有效记录；`historicalCounts` 只统计每个工作日最新已发布版本中，该人员当时属于当前组、具备该岗位资格且该时段确有岗位需求的分配次数。它与统计响应的 `fairnessCount` 使用相同口径，并作为生成器公平性优化的历史基数。候选排班及未发布调整不会改变历史基数；两天工作段的第二天生成时，算法仍会临时计入刚生成的第一天结果。
+`GET /api/people` 的 `asOf` 可选，缺省为中国时区当天。返回元素包含 `id`、`name`、`groupCode`、`enabled`、`remark`、`qualifiedPositionCodes`、`historicalCounts`。资格和组别按 `asOf` 查有效记录；`historicalCounts` 只统计每个工作日最新已发布版本中，该人员当时属于当前组、具备该岗位资格且该时段确有岗位需求的分配次数。它与统计响应的 `fairnessCount` 使用相同口径，并作为生成器公平性优化的历史基数。候选排班及未发布调整不会改变历史基数；连续工作日生成时，算法会临时计入本次批量中此前各日的结果。
 
 ## 统计
 
@@ -189,16 +189,16 @@ GET /api/v1/statistics/person-position-assignments?startDate=2026-10-01&endDate=
 
 ## 推电宝轮换
 
-数据库保存型排班接口在每个工作日附带两条 `powerBankDuties`，按当天早上推回、当天晚上送仓排序。每个两天工作段的第一天早上、第一天晚上、第二天早上由第一天晚下组负责；第二天晚上由另一组负责，并在下个工作段继续轮换。工作段由标准模板的轮班锚点确定，单独生成第二天时也使用同一规则，休息日不安排推电宝。
+数据库保存型排班接口按规则附带 `powerBankDuties`；关闭推电宝时为空，周期日的任一方向可设为不安排。默认每个工作日有两条任务，按当天早上推回、当天晚上送仓排序。每个两天工作段的第一天早上、第一天晚上、第二天早上由第一天晚下组负责；第二天晚上由另一组负责，并在下个工作段继续轮换。工作段由标准模板的轮班锚点确定，单独生成第二天时也使用同一规则，休息日不安排推电宝。
 
-例如第一天 A 早下、B 晚下：当天早晚均由 B 组承担，第二天早上仍由 B 组承担、晚上由 A 组承担；下一工作段第一天早晚均由 A 组承担，第二天早上 A 组、晚上 B 组。每次任务按该组名单顺延一人，名单末尾回到开头，跳过当天未启用或不在该组的人员。名单外人员不参与自动轮换。名单按姓名匹配；姓名或轮换名单发生变化时需同步修改名单配置。
+例如第一天 A 早下、B 晚下：当天早晚均由 B 组承担，第二天早上仍由 B 组承担、晚上由 A 组承担；下一工作段第一天早晚均由 A 组承担，第二天早上 A 组、晚上 B 组。每次任务按该组名单顺延一人，名单末尾回到开头，跳过当天未启用或不在该组的人员。名单外人员不参与自动轮换。v15 起名单按人员 ID 保存，可在排班规则页增删排序；改名不影响轮换。以上组别顺序为初始默认值，每天负责组可通过 rules.cycle 调整。
 
-`GET /api/schedules/power-bank-order` 返回实际使用的 A/B 组有序姓名列表，排班页右侧直接展示该接口的数据。两组顺序为：
+`GET /api/schedules/power-bank-order` 返回实际使用的 A/B 组有序姓名列表，排班页右侧直接展示该接口的数据。初始默认顺序为：
 
 - A：唐龙、甘春霖、刘雨鑫、吕珈萱、吴世富、石蓉昌、骆灿、黄勇斌、黎哲成。
 - B：宾昕宇、阳菲莉、李文锦、王小曼、刘芳全、黄在显、钟绍凌、邹运谷、莫少波。
 
-轮换位置只依据生成日期之前的已发布排班。同一天同组有两次任务时，以晚上送仓的人作为最后一人；批量生成时两天之间继续推进，未发布版本和重复生成不会消耗历史轮次。手动调整仍允许在任务原组内选择启用人员；若上次手动人选不在固定名单内，下次从该组名单开头继续。
+轮换位置只依据生成日期之前的已发布排班。同一天同组有两次任务时，以晚上送仓的人作为最后一人；批量生成时各工作日之间继续推进，未发布版本和重复生成不会消耗历史轮次。手动调整仍允许在任务原组内选择启用人员；若上次手动人选不在固定名单内，下次从该组名单开头继续。
 
 已有数据库需先应用 `migration_v14_power_bank_same_group.sql`，解除同一天同组只能承担一个方向的旧约束；`(schedule_id, direction)` 主键继续确保每个方向只有一人。迁移保留已有记录，新规则通过重新生成候选版本生效。
 
@@ -214,36 +214,30 @@ GET /api/v1/statistics/person-position-assignments?startDate=2026-10-01&endDate=
 }
 ```
 
-`direction` 为 `TO_WAREHOUSE`（当天晚上送入仓库，`slotCode: NIGHT_UNTIL_END`）或 `FROM_WAREHOUSE`（当天早上推回，`slotCode: MORNING_0530_0800`）。推回任务日期为该排班工作日，不是次日岗位时段；统计日期仍按该工作日计算。直接求解接口 `POST /api/schedules/generate` 不保存排班，因此不会生成或推进推电宝轮换。
+`direction` 为 `TO_WAREHOUSE`（当天晚上送入仓库，时段编码取 `rules.powerBankEveningSlot`）或 `FROM_WAREHOUSE`（当天早上推回，`slotCode: MORNING_0530_0800`）。推回任务日期为该排班工作日，不是次日岗位时段；统计日期仍按该工作日计算。直接求解接口 `POST /api/schedules/generate` 不保存排班，因此不会生成或推进推电宝轮换。
 
 ## 每日岗位需求
 
-通常只需配置一次标准模板。模板中的 `groupRole` 使用 `EARLY_DOWN` 或 `LATE_DOWN`；系统根据轮班锚点和二上二休日历，将其解析为当天的 A/B 组。锚点日期是一个周期的第一个工作日；该日及次日工作，随后两天休息。轮班示例：锚点为 `2026-10-12` 且首日早下组为 A 时，工作日早下组依次为 12 日 A、13 日 B、16 日 B、17 日 A。
+`GET /api/schedules/requirements-template` 返回 `anchorWorkDate`、`firstEarlyDownGroup`、`rules` 和 `requirements`。`PUT` 整体替换这四个字段，`rules` 必填；客户端应先读取完整模板，修改后保留未改字段再提交。
 
-`PUT /api/schedules/requirements-template` 整体替换标准模板。下例仅展示格式，实际模板应包含所有固定岗位和时段。每个两天工作段的第一天会包含次日 `05:30–08:00` 和 `08:00–09:00` 交接时段：前者由早下组上岗并安排 3 人打早餐，后者由另一组接班；第二工作日之后不生成 08:00–09:00 用餐交接。两个早间时段都固定安排候机楼（负责人）1 人和夹层 1 人；除去候机楼、夹层和 05:30–08:00 的 3 名打早餐人员后，该组其余人员全部安排防爆。模板岗位组别分别设为 `EARLY_DOWN` 和 `LATE_DOWN`。
+`groupRole` 使用 `EARLY_DOWN` / `LATE_DOWN`，按锚点和 `rules.cycle` 解析成当天两个启用组别。`FIRST` 表示参考组，`OTHER` 表示另一组；`REST` 表示休息日。锚点对应周期第 1 天，周期须以工作日开始、休息日结束，长度 2–60 天。
 
-```json
-{
-  "anchorWorkDate": "2026-10-12",
-  "firstEarlyDownGroup": "A",
-  "requirements": [
-    {
-      "slotCode": "DAY_0900_1130",
-      "positionCode": "BOMB",
-      "groupRole": "EARLY_DOWN",
-      "minCount": 3,
-      "maxCount": null
-    },
-    {
-      "slotCode": "NIGHT_UNTIL_END",
-      "positionCode": "FLOW",
-      "groupRole": "LATE_DOWN",
-      "minCount": 1,
-      "maxCount": 1
-    }
-  ]
-}
-```
+| rules 字段 | 含义 |
+| --- | --- |
+| `cycle` | 每天 `{earlyGroup, morningPowerGroup, eveningPowerGroup}`；早下组 FIRST/OTHER/REST，推电宝组 FIRST/OTHER/NONE |
+| `slots` | 每段 `{code, start, end, dayOffset, onlyBeforeWorkday, remainderPosition}`；HH:mm 时间，end=null 表示航班结束，dayOffset 为 0/1，剩余分配为空字符串/TERMINAL/BOMB |
+| `flowNoRepeat`、`supervisorNoRepeat` | 同一人员每天回流/监管最多一次 |
+| `supervisorRequired` | 有候机楼人员时必须指定监管 |
+| `fixedExclusive` | 固定人员是否仅参加指定时段与岗位 |
+| `mealPreferDistinct` | 优先避免打饭重复，含次日早餐；人数不足时可重复 |
+| `balanceHistory`、`positionPreferDistinct`、`rolePreferences` | 历史次数均衡、同岗位去重、打饭/回流人选偏好优化 |
+| `replacementEnabled`、`replacementPersonId`、`replacementLabel`、`replacementSlots` | 替岗高亮开关、被替岗人员 ID、文字（1–10 字符）、适用时段编码 |
+| `powerBankEnabled`、`powerBankOrder` | 推电宝开关及 `{组别编码: [人员ID, ...]}` 有序名单 |
+| `powerBankMorningStart`、`powerBankMorningEnd`、`powerBankEveningSlot` | 早上推回时间范围和晚上送仓时段编码 |
+
+岗位需求配置 `slotCode`、`positionCode`、`groupRole`、`minCount`、`maxCount`、`fixedPersonId`。最高人数为 null 不限，最低为 0 允许空缺。自动分配剩余人员时须保留接收岗位，其最高人数也会校验。时段须有唯一编码、按时间顺序排列且不得重叠；旧时段数据库记录保留以支持历史引用。
+
+新排班快照包含 `rules` 和 `rotation`，排班详情接口返回这两项。自动模式的调整和发布按版本快照校验，修改规则仅影响后续生成；无快照旧版本沿用原默认业务规则。需先执行 `migration_v15_configurable_rules.sql`，详见根目录 README。
 
 `GET /api/schedules/{date}/requirements` 优先返回当天手动覆盖；没有覆盖时返回按模板和轮班规则解析的需求。`PUT` 会整体替换当天需求，适用于临时例外；`DELETE` 可删除覆盖并恢复模板。
 
@@ -302,13 +296,13 @@ GET /api/v1/statistics/person-position-assignments?startDate=2026-10-01&endDate=
 }
 ```
 
-求解只从启用、组别匹配且具备岗位资格的人员中安排防爆和夹层；防爆每段至少 3 人，打饭每次固定 3 人。常规时段候机楼人数由求解器分配完同组其他岗位后自动计算，候机楼资格无需单独维护；该时段的候机楼需求行应设 `minCount: 0`、`maxCount: null`。例外是次日 `05:30–08:00` 和 `08:00–09:00`：候机楼（负责人）和夹层各 1 人；05:30 时另安排 3 人打早餐。除这些固定岗位人员外，该组其余人员全部安排防爆。这两个早间时段不允许添加其他岗位。同一人员同一时段不能兼任多个岗位。
+求解按已保存的 rules 和需求人数执行，不再硬编码防爆至少 3 人、打饭固定 3 人或早班候机楼固定 1 人。候机楼不要求单独岗位资格；其他岗位要求有效资格。同一人不能在同一时段兼任正式岗位；固定人员可以跨组到指定岗位，过夜和推电宝是独立附加任务。
 
-常规时段回流由防爆上岗组的轮休组承担；19:30 至航班结束的回流由防爆上岗组承担。回流人员当天跨时段不得重复，并优先选取当天其他时段承担候机楼岗位的人员。每个候机楼时段会在候机楼人员中选一名监管人员，且监管人员当天不重复。打饭优先选择具备防爆资格的人员。优化顺序为减少总上岗人数、平衡同组同岗位的历史加本次次数、尽量避免同一天重复同一岗位，再处理打饭和回流偏好。需求按每个时段分别指定组别，不会跨组混排。
+回流组别由需求指定。回流不重复、监管必选/不重复以及固定人员排他性由规则开关决定。优化顺序为控制超额人数、打饭去重、历史公平性、同岗位去重、岗位人选偏好；后四项可分别关闭。人员减少时可降低人数或放宽重复限制，系统不会自动忽略最低需求。
 
-`POST /api/schedules/generate-from-personnel` 请求为 `{"scheduleDate":"2026-10-17","requirements":[...]}`，需求元素格式与上节相同；人员、资格和历史次数从数据库读取。`POST /api/schedules/generate-from-database` 请求为 `{"scheduleDate":"2026-10-17"}`，按单日读取需求并保存生成结果。排班页面应使用 `POST /api/schedules/generate-work-period-from-database`，请求格式相同；可传入工作周期的任一工作日，服务端按轮班锚点定位两天工作段，一次生成并保存两天。只有两天都可行时才写入数据库，第二天的公平性计算会计入第一天的岗位分配。响应包含 `workPeriodStartDate`、`workPeriodEndDate`、整体 `status`、`days`（逐日返回实际需求和生成结果）及 `messages`。传入休息日时返回 `400`。`/generate` 仅返回结果，不写入数据库。
+`POST /api/schedules/generate-from-personnel` 请求为 `{"scheduleDate":"2026-10-17","requirements":[...]}`，需求元素格式与上节相同；人员、资格和历史次数从数据库读取。`POST /api/schedules/generate-from-database` 请求为 `{"scheduleDate":"2026-10-17"}`，按单日读取需求并保存生成结果。排班页面应使用 `POST /api/schedules/generate-work-period-from-database`，请求格式相同；可传入工作周期的任一工作日，服务端按已配置周期定位连续工作日，一次生成并保存整个工作段。每个日期都会保存为待发布版本；无解、求解超时或业务配置冲突的日期保存为手工模式，整体 `status` 返回 `MANUAL`。后一天的公平性计算会计入本批此前日期的岗位分配。响应包含 `workPeriodStartDate`、`workPeriodEndDate`、整体 `status`、`days`（逐日返回实际需求和生成结果）及 `messages`。传入休息日时返回 `400`。`/generate` 仅返回结果，不写入数据库。
 
-使用生成响应中的 `scheduleId` 调用 `GET /api/schedules/{scheduleId}` 查询排班。待发布排班可通过 `PUT /api/schedules/{scheduleId}` 提交完整岗位分配；人员使用数据库 ID。系统会检查人员当天的组别、相应岗位资格（常规候机楼按剩余在岗人员规则，次日早班固定 1 人）、需求人数、同一时段不可重复上岗，以及监管人员和回流的轮换规则。过夜人员属于岗位分配，可在原时段、原组内按岗位资格调整。请求可另外带 `powerBankDuties`，在推电宝的原组内换人；此辅助任务不检查岗位资格，也不占岗位名额。省略 `powerBankDuties` 表示保留现有推电宝安排。只有 `CANDIDATE` 状态可编辑，其他状态返回 `409`。
+使用生成响应中的 `scheduleId` 调用 `GET /api/schedules/{scheduleId}` 查询排班。待发布排班可通过 `PUT /api/schedules/{scheduleId}` 提交完整岗位分配；人员使用数据库 ID。系统会检查人员当天的组别、相应岗位资格（候机楼无需单独资格）、需求人数、同一时段不可重复上岗，以及监管人员和回流的轮换规则。过夜人员属于岗位分配，可在原时段、原组内按岗位资格调整。请求可另外带 `powerBankDuties`，在推电宝的原组内换人；此辅助任务不检查岗位资格，也不占岗位名额。省略 `powerBankDuties` 表示保留现有推电宝安排。只有 `CANDIDATE` 状态可编辑，其他状态返回 `409`。
 
 人工确认后调用 `POST /api/schedules/{scheduleId}/publish`，无需请求体。成功响应为更新后的 `ScheduleResponse`，其中 `status` 为 `PUBLISHED`。重复发布当前已发布版本会返回该版本；已取消或草稿版本返回 `409`。同一工作日的新版本发布后，旧发布版本自动转为 `CANCELLED`。
 
@@ -343,7 +337,7 @@ curl -X POST http://localhost:8080/api/schedules/42/publish
 }
 ```
 
-生成响应字段：`scheduleDate`、`status`、`assignments`、`messages`、`fairness`、`scheduleId`、`version`。每条 `assignment` 包含时段、岗位、组别和 `people` 人员数组；人员字段 `terminalSupervisor` 标记该候机楼时段的监管人员，其他人员为 `false`。`fairness` 提供每个组别/岗位历史加本次次数的最小值和最大值。数据库接口成功保存时返回候选 `scheduleId`、`version`；直接求解或不可行时二者为 `null`。
+生成响应字段：`scheduleDate`、`status`、`assignments`、`messages`、`fairness`、`scheduleId`、`version`。每条 `assignment` 包含时段、岗位、组别和 `people` 人员数组；人员字段 `terminalSupervisor` 标记该候机楼时段的监管人员，其他人员为 `false`。`fairness` 提供每个组别/岗位历史加本次次数的最小值和最大值。数据库接口成功保存时返回候选 `scheduleId`、`version`；直接求解时二者为 `null`；数据库生成接口的无解结果改为保存手工草稿并返回 `MANUAL`。
 
 ```json
 {
@@ -422,3 +416,9 @@ curl -X POST http://localhost:8080/api/schedules/42/publish
 ## 错误处理
 
 无效日期、必填字段缺失、未知编码或人数范围错误通常返回 `400`；人员 ID 不存在返回 `404`。错误响应使用 Spring 默认格式，目前没有单独承诺固定 JSON 错误结构。
+
+### 自动失败后的手工排班
+
+数据库保存型生成接口在自动规则无法满足时返回 HTTP 200、`status: MANUAL` 和已保存的 `scheduleId`；周期内成功的日期仍保留自动模式。推电宝轮换失败时保留已生成的正式岗位，并将本批次切换为手工模式。数据库或网络故障仍返回错误，不能凭空创建草稿。
+
+详情接口增加 `manualMode`、`manualReason`，由服务端写入版本快照，刷新与恢复历史版本均保留。手工草稿的 PUT 和发布接口不执行人数、分组、资格、启用状态、固定人员、重复、监管必选、换岗或剩余人员分配等业务校验；管理员可自行增减、跨组或重复安排，推电宝也可清空或重新选人。仍检查人员/岗位/时段/组别是否存在、数据结构是否合法，防止保存无效引用。手工模式不自动补人，保存后可发布并正常计入统计、导出 PNG。正常生成的自动模式继续执行原规则。无需新增数据库迁移。

@@ -1,6 +1,7 @@
 package com.shiftbalance.requirement;
 
 import jakarta.validation.Valid;
+import com.shiftbalance.schedule.SchedulingRules;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -18,6 +19,7 @@ public final class RequirementDtos {
     public record RequirementTemplateUpdateRequest(
             @NotNull LocalDate anchorWorkDate,
             @NotBlank String firstEarlyDownGroup,
+            @NotNull SchedulingRules rules,
             @NotEmpty List<@Valid TemplateRequirementRequest> requirements) {}
 
     public record TemplateRequirementRequest(
@@ -33,6 +35,7 @@ public final class RequirementDtos {
     public record RequirementTemplateView(
             LocalDate anchorWorkDate,
             String firstEarlyDownGroup,
+            SchedulingRules rules,
             List<TemplateRequirementRequest> requirements) {}
 
     public record RequirementRequest(

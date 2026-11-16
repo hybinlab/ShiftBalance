@@ -1,3 +1,4 @@
+import type { SchedulingRules } from './schedulingRules'
 type Assignment = {
   slotCode: string
   positionCode: string
@@ -15,14 +16,19 @@ export function chooseBombReplacements(
   assignments: Assignment[],
   people: Person[],
   preferred: Record<string, string> = {},
+  rules?: SchedulingRules,
+  manualMode = false,
 ) {
+  if (manualMode) return new Map(Object.entries(preferred).filter(([slot, id]) => assignments.some(a =>
+    a.slotCode === slot && a.positionCode === 'TERMINAL' && a.personIds.includes(id))))
   const replacementBySlot = new Map<string, string>()
-  const original = people.find((person) => person.name === '廖家史')
+  if (rules && !rules.replacementEnabled) return replacementBySlot
+  const original = people.find((person) => rules?.replacementPersonId ? person.id === rules.replacementPersonId : person.name === '廖家史')
   if (!original) return replacementBySlot
   const candidatesBySlot = new Map<string, Person[]>()
   const selectedCounts = new Map<string, number>()
 
-  for (const slotCode of ['DAY_0900_1130', 'DAY_1430_1730']) {
+  for (const slotCode of rules?.replacementSlots ?? ['DAY_0900_1130', 'DAY_1430_1730']) {
     const bomb = assignments.find((item) => item.slotCode === slotCode
       && item.positionCode === 'BOMB' && item.personIds.includes(original.id))
     if (!bomb) continue

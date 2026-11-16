@@ -21,7 +21,16 @@ public final class ScheduleDtos {
     public record GenerateRequest(
             @NotNull LocalDate scheduleDate,
             @NotEmpty List<@Valid StaffMember> staff,
-            @NotEmpty List<@Valid StaffingRequirement> requirements) {}
+            @NotEmpty List<@Valid StaffingRequirement> requirements,
+            SchedulingRules rules, RotationSnapshot rotation) {
+        public GenerateRequest(LocalDate scheduleDate, List<StaffMember> staff, List<StaffingRequirement> requirements) {
+            this(scheduleDate, staff, requirements, SchedulingRules.defaults(), null);
+        }
+        public GenerateRequest(LocalDate date, List<StaffMember> staff, List<StaffingRequirement> requirements, SchedulingRules rules) {
+            this(date, staff, requirements, rules, null);
+        }
+        public GenerateRequest { if (rules == null) rules = SchedulingRules.defaults(); }
+    }
 
     public record ConfiguredGenerateRequest(
             @NotNull LocalDate scheduleDate,
@@ -42,7 +51,7 @@ public final class ScheduleDtos {
             GenerateResponse schedule) {}
 
     public record EditScheduleRequest(
-            @NotEmpty List<@Valid ScheduleEditAssignment> assignments,
+            @NotNull List<@Valid ScheduleEditAssignment> assignments,
             List<@Valid PowerBankDutyEdit> powerBankDuties,
             Map<@NotBlank String, @NotBlank String> bombReplacements) {}
 
@@ -128,7 +137,10 @@ public final class ScheduleDtos {
             List<Assignment> assignments,
             List<PowerBankDuty> powerBankDuties,
             List<StaffingRequirement> requirements,
-            Map<String, String> bombReplacements) {}
+            Map<String, String> bombReplacements, SchedulingRules rules, RotationSnapshot rotation,
+            boolean manualMode, String manualReason) {}
+
+    public record RotationSnapshot(LocalDate anchorWorkDate, String firstEarlyDownGroup) {}
 
     public record ScheduleCalendarEntry(
             long scheduleId,

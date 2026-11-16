@@ -1,6 +1,7 @@
 package com.shiftbalance.schedule;
 
 import com.shiftbalance.schedule.ScheduleDtos.GenerateRequest;
+import com.shiftbalance.schedule.ScheduleDtos.RotationSnapshot;
 import com.shiftbalance.schedule.ScheduleDtos.GenerateResponse;
 import com.shiftbalance.schedule.ScheduleDtos.ConfiguredGenerateRequest;
 import com.shiftbalance.schedule.ScheduleDtos.GenerateFromDatabaseRequest;
@@ -63,12 +64,18 @@ public class ScheduleController {
 
     @GetMapping("/time-slots")
     public List<TimeSlot> timeSlots() {
-        return TimeSlotCatalog.all();
+        var rules = requirementTemplateService.rules();
+        return rules.slots().stream().map(slot -> rules.timeSlot(slot.code())).toList();
     }
 
     @GetMapping("/power-bank-order")
     public Map<String, List<String>> powerBankOrder() {
-        return PowerBankRotation.PERSON_ORDER;
+        Map<String, String> names = personnelService.people(LocalDate.now(), Set.of()).stream()
+                .collect(java.util.stream.Collectors.toMap(PersonView::id, PersonView::name));
+        Map<String, List<String>> result = new java.util.LinkedHashMap<>();
+        requirementTemplateService.rules().powerBankOrder().forEach((group, ids) ->
+                result.put(group, ids.stream().map(id -> names.getOrDefault(id, "人员 " + id)).toList()));
+        return result;
     }
 
     @GetMapping("/calendar")
@@ -120,7 +127,7 @@ public class ScheduleController {
 
     @PostMapping("/generate")
     public ResponseEntity<GenerateResponse> generate(@jakarta.validation.Valid @RequestBody GenerateRequest request) {
-        return response(scheduleSolver.generate(request));
+        return response(scheduleSolver.generate(new GenerateRequest(request.scheduleDate(), request.staff(), request.requirements(), requirementTemplateService.rules())));
     }
 
     @PostMapping("/generate-from-personnel")
@@ -129,8 +136,10 @@ public class ScheduleController {
         List<StaffMember> staff = personnelService.people(request.scheduleDate(), Set.of(request.scheduleDate())).stream()
                 .map(PersonView::toStaffMember)
                 .toList();
-        GenerateRequest solverRequest = new GenerateRequest(request.scheduleDate(), staff, request.requirements());
-        GenerateResponse result = scheduleSolver.generate(solverRequest);
+        var template = requirementTemplateService.template();
+        GenerateRequest solverRequest = new GenerateRequest(request.scheduleDate(), staff, request.requirements(), template.rules(),
+                new RotationSnapshot(template.anchorWorkDate(), template.firstEarlyDownGroup()));
+        GenerateResponse result = generateCandidate(solverRequest);
         return response(persistenceService.saveCandidate(solverRequest, result));
     }
 
@@ -138,42 +147,48 @@ public class ScheduleController {
     public ResponseEntity<GenerateResponse> generateFromDatabase(
             @jakarta.validation.Valid @RequestBody GenerateFromDatabaseRequest request) {
         GenerateRequest solverRequest = databaseRequest(request.scheduleDate(), Set.of(request.scheduleDate()));
-        GenerateResponse result = scheduleSolver.generate(solverRequest);
+        GenerateResponse result = generateCandidate(solverRequest);
         return response(persistenceService.saveCandidate(solverRequest, result));
     }
 
     @PostMapping("/generate-work-period-from-database")
     public GenerateWorkPeriodResponse generateWorkPeriodFromDatabase(
             @jakarta.validation.Valid @RequestBody GenerateFromDatabaseRequest request) {
-        LocalDate startDate = requirementTemplateService.workPeriodStartDate(request.scheduleDate());
-        Set<LocalDate> replacedDates = Set.of(startDate, startDate.plusDays(1));
-        GenerateRequest firstRequest = databaseRequest(startDate, replacedDates);
-        GenerateRequest secondRequest = databaseRequest(startDate.plusDays(1), replacedDates);
-        GenerateResponse first = scheduleSolver.generate(firstRequest);
-        secondRequest = withAdditionalHistory(secondRequest, first);
-        GenerateResponse second = scheduleSolver.generate(secondRequest);
-        List<GenerateRequest> requests = List.of(firstRequest, secondRequest);
-        List<GenerateResponse> generated = List.of(first, second);
-        List<String> messages = generated.stream()
-                .flatMap(result -> result.messages().stream().map(message -> result.scheduleDate() + "：" + message))
-                .toList();
-        boolean feasible = generated.stream()
-                .allMatch(result -> result.status().equals("OPTIMAL") || result.status().equals("FEASIBLE"));
-        List<GenerateResponse> schedules = feasible ? persistenceService.saveCandidates(requests, generated) : generated;
-        List<WorkPeriodDayResult> days = List.of(
-                new WorkPeriodDayResult(startDate, firstRequest.requirements().stream().map(requirement ->
-                        new RequirementView(startDate, requirement.slotCode(), requirement.positionCode(),
-                                requirement.positionName(), requirement.groupCode(), requirement.minCount(),
-                                requirement.maxCount(), requirement.fixedPersonId())).toList(), schedules.get(0)),
-                new WorkPeriodDayResult(startDate.plusDays(1), secondRequest.requirements().stream().map(requirement ->
-                        new RequirementView(startDate.plusDays(1), requirement.slotCode(), requirement.positionCode(),
-                                requirement.positionName(), requirement.groupCode(), requirement.minCount(),
-                                requirement.maxCount(), requirement.fixedPersonId())).toList(), schedules.get(1)));
-        String status = feasible
-                ? generated.stream().allMatch(result -> result.status().equals("OPTIMAL")) ? "OPTIMAL" : "FEASIBLE"
-                : generated.stream().filter(result -> !result.status().equals("OPTIMAL") && !result.status().equals("FEASIBLE"))
-                        .findFirst().orElseThrow().status();
-        return new GenerateWorkPeriodResponse(startDate, startDate.plusDays(1), status, days, messages);
+        List<LocalDate> dates = requirementTemplateService.workPeriodDates(request.scheduleDate());
+        Set<LocalDate> replacedDates = Set.copyOf(dates);
+        var requests = new java.util.ArrayList<GenerateRequest>();
+        var generated = new java.util.ArrayList<GenerateResponse>();
+        List<GenerateRequest> inputs = dates.stream().map(date -> databaseRequest(date, replacedDates)).toList();
+        for (GenerateRequest input : inputs) {
+            GenerateRequest next = input;
+            for (GenerateResponse previous : generated) next = withAdditionalHistory(next, previous);
+            requests.add(next);
+            generated.add(generateCandidate(next));
+        }
+        List<GenerateResponse> saved = persistenceService.saveCandidates(requests, generated);
+        List<String> messages = saved.stream().flatMap(result -> result.messages().stream()
+                .map(message -> result.scheduleDate() + "：" + message)).toList();
+        var days = new java.util.ArrayList<WorkPeriodDayResult>();
+        for (int i = 0; i < requests.size(); i++) {
+            GenerateRequest r = requests.get(i);
+            days.add(new WorkPeriodDayResult(r.scheduleDate(), r.requirements().stream().map(item ->
+                    new RequirementView(r.scheduleDate(), item.slotCode(), item.positionCode(), item.positionName(),
+                            item.groupCode(), item.minCount(), item.maxCount(), item.fixedPersonId())).toList(), saved.get(i)));
+        }
+        String status = saved.stream().anyMatch(r -> r.status().equals("MANUAL")) ? "MANUAL"
+                : saved.stream().allMatch(r -> r.status().equals("OPTIMAL")) ? "OPTIMAL" : "FEASIBLE";
+        return new GenerateWorkPeriodResponse(dates.getFirst(), dates.getLast(), status, days, messages);
+    }
+
+    private GenerateResponse generateCandidate(GenerateRequest request) {
+        try {
+            return scheduleSolver.generate(request);
+        } catch (ResponseStatusException exception) {
+            // Invalid scheduling constraints can be resolved manually; infrastructure failures still propagate.
+            if (exception.getStatusCode().value() != 400 && exception.getStatusCode().value() != 422) throw exception;
+            return new GenerateResponse(request.scheduleDate(), "MANUAL", List.of(),
+                    List.of(exception.getReason() == null ? "自动排班配置不可用" : exception.getReason()), List.of());
+        }
     }
 
     private GenerateRequest databaseRequest(LocalDate scheduleDate, Set<LocalDate> excludedHistoryDates) {
@@ -189,7 +204,8 @@ public class ScheduleController {
         List<StaffMember> staff = personnelService.people(scheduleDate, excludedHistoryDates).stream()
                 .map(PersonView::toStaffMember)
                 .toList();
-        return new GenerateRequest(scheduleDate, staff, requirements);
+        var template = requirementTemplateService.template();
+        return new GenerateRequest(scheduleDate, staff, requirements, template.rules(), new RotationSnapshot(template.anchorWorkDate(), template.firstEarlyDownGroup()));
     }
 
     private static GenerateRequest withAdditionalHistory(GenerateRequest request, GenerateResponse previous) {
@@ -203,7 +219,7 @@ public class ScheduleController {
             return new StaffMember(person.id(), person.name(), person.groupCode(), person.enabled(),
                     person.qualifiedPositionCodes(), counts);
         }).toList();
-        return new GenerateRequest(request.scheduleDate(), staff, request.requirements());
+        return new GenerateRequest(request.scheduleDate(), staff, request.requirements(), request.rules(), request.rotation());
     }
 
     private static ResponseEntity<GenerateResponse> response(GenerateResponse response) {

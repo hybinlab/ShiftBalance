@@ -1,3 +1,4 @@
+import { remainderPosition, ruleTimeSlots, powerDutyLabel, type SchedulingRules } from './schedulingRules'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { Alert, App as AntApp, Avatar, Badge, Button, Card, DatePicker, Empty, Input, Menu, Modal, Select, Space, Spin, Statistic, Table, Tag, type TableColumnsType } from 'antd'
 import {
@@ -31,7 +32,7 @@ import RulesPage from './RulesPage'
 import ScheduleCalendarPage from './ScheduleCalendarPage'
 import ScheduleHistoryPage from './ScheduleHistoryPage'
 import StatisticsPage from './StatisticsPage'
-import { groupForDate, workPeriodStartDate } from './scheduleRotation'
+import { groupForDate, workPeriodDates } from './scheduleRotation'
 import { chooseBombReplacements } from './bombReplacements'
 import { downloadScheduleImage } from './scheduleImage'
 import './App.css'
@@ -80,6 +81,8 @@ type Assignment = {
   terminalSupervisorId: string | null
 }
 export type ScheduleRecord = {
+  manualMode?: boolean
+  manualReason?: string
   scheduleId: number
   scheduleDate: string
   status: string
@@ -96,6 +99,8 @@ export type ScheduleRecord = {
   }>
   powerBankDuties: PowerBankDuty[]
   requirements?: Requirement[]
+  rules?: SchedulingRules
+  rotation?: { anchorWorkDate: string; firstEarlyDownGroup: string }
   bombReplacements?: Record<string, string>
 }
 type WorkPeriodGenerateResponse = {
@@ -117,9 +122,10 @@ type WorkPeriodGenerateResponse = {
   }>
   messages: string[]
 }
-type ScheduleRow = { key: string; kind: 'slot' | 'overnight' | 'powerbank'; slot: TimeSlot | null }
+type ScheduleRow = { key: string; kind: 'slot' | 'overnight' | 'powerbank'; slot: TimeSlot | null; overnight?: Assignment }
 type PersonDrag = { personId: string; sourceKey: string; x: number; y: number }
 type RotationTemplate = {
+  rules?: SchedulingRules
   anchorWorkDate: string
   firstEarlyDownGroup: string
   requirements: Array<{
@@ -273,6 +279,15 @@ function makeAssignments(
   })
 }
 
+function editablePowerDuties(record: ScheduleRecord, defaultGroup: string): PowerBankDuty[] {
+  if (!record.manualMode) return record.powerBankDuties ?? []
+  return (['FROM_WAREHOUSE', 'TO_WAREHOUSE'] as const).map(direction =>
+    record.powerBankDuties?.find(d => d.direction === direction) ?? {
+      direction, slotCode: direction === 'TO_WAREHOUSE' ? record.rules?.powerBankEveningSlot ?? 'NIGHT_UNTIL_END' : 'MORNING_0530_0800',
+      groupCode: defaultGroup, personId: '', personName: '',
+    })
+}
+
 function normalizeApiBase(value: string) {
   return value.trim().replace(/\/$/, '')
 }
@@ -321,24 +336,6 @@ async function ensureCsrf(base: string) {
   csrfTokenBase = base
 }
 
-function candidateRecord(response: {
-  scheduleId: number
-  scheduleDate: string
-  status: string
-  version: number
-  assignments: ScheduleRecord['assignments']
-  powerBankDuties?: PowerBankDuty[]
-}): ScheduleRecord {
-  return {
-    scheduleId: response.scheduleId,
-    scheduleDate: response.scheduleDate,
-    status: response.status,
-    version: response.version,
-    assignments: response.assignments,
-    powerBankDuties: response.powerBankDuties ?? [],
-  }
-}
-
 function Icon({ name, size = 19 }: { name: string; size?: number }) {
   const icons = {
     plane: SendOutlined,
@@ -367,7 +364,7 @@ function Icon({ name, size = 19 }: { name: string; size?: number }) {
   return <AntIcon aria-hidden="true" style={{ fontSize: size, verticalAlign: '-0.125em' }} />
 }
 
-function validateAssignments(assignments: Assignment[], people: Person[]) {
+function validateAssignments(assignments: Assignment[], people: Person[], policy?: SchedulingRules) {
   const errors: string[] = []
   const staffingIdsBySlot = new Set<string>()
   const overnightIdsBySlot = new Set<string>()
@@ -390,13 +387,13 @@ function validateAssignments(assignments: Assignment[], people: Person[]) {
       if (person && ((person.groupCode !== assignment.groupCode && id !== assignment.fixedPersonId) || (!person.qualifiedPositionCodes.includes(assignment.positionCode) && assignment.positionCode !== 'TERMINAL'))) {
         errors.push(`${person.name} 不符合 ${assignment.positionName} 的组别或资格要求`)
       }
-      const fixedElsewhere = assignments.some((item) => item.fixedPersonId === id && item !== assignment
+      const fixedElsewhere = (policy?.fixedExclusive ?? true) && assignments.some((item) => item.fixedPersonId === id && item !== assignment
         && !(item.slotCode === assignment.slotCode
           && (item.positionCode === 'OVERNIGHT' || assignment.positionCode === 'OVERNIGHT')))
       if (fixedElsewhere && id !== assignment.fixedPersonId) {
         errors.push(person.name + ' 只能安排在其固定时段和岗位')
       }
-      if (assignment.positionCode === 'FLOW') {
+      if ((policy?.flowNoRepeat ?? true) && assignment.positionCode === 'FLOW') {
         if (flowIds.has(id)) errors.push('回流人员当天不能重复安排')
         flowIds.add(id)
       }
@@ -406,22 +403,20 @@ function validateAssignments(assignments: Assignment[], people: Person[]) {
     }
     if (assignment.positionCode === 'TERMINAL' && assignment.terminalSupervisorId) {
       if (!assignment.personIds.includes(assignment.terminalSupervisorId)) errors.push(`${assignment.slotLabel} 的监管人员必须属于候机楼人员`)
-      if (supervisorIds.has(assignment.terminalSupervisorId)) errors.push('候机楼监管人员当天不能重复安排')
+      if ((policy?.supervisorNoRepeat ?? true) && supervisorIds.has(assignment.terminalSupervisorId)) errors.push('候机楼监管人员当天不能重复安排')
       supervisorIds.add(assignment.terminalSupervisorId)
     }
-    if (assignment.positionCode === 'TERMINAL' && count > 0 && !assignment.terminalSupervisorId) errors.push(`${assignment.slotLabel} 需要指定一名候机楼监管人员`)
+    if ((policy?.supervisorRequired ?? true) && assignment.positionCode === 'TERMINAL' && count > 0 && !assignment.terminalSupervisorId) errors.push(`${assignment.slotLabel} 需要指定一名候机楼监管人员`)
   }
-  for (const terminal of assignments.filter((item) => item.positionCode === 'TERMINAL')) {
-    const hasDerivedPosts = assignments.some((item) => item.slotCode === terminal.slotCode && item.groupCode === terminal.groupCode && ['BOMB', 'MEZZANINE'].includes(item.positionCode))
-    if (!hasDerivedPosts) continue
+  for (const terminal of assignments.filter((item) => item.positionCode === remainderPosition(item.slotCode, policy))) {
     const expected = new Set(people.filter((person) => person.enabled && person.groupCode === terminal.groupCode).map((person) => person.id))
     assignments
       .filter((item) => item.fixedPersonId)
       .forEach((item) => {
         const pinned = people.find((person) => person.id === item.fixedPersonId)
         if (pinned && !(item.positionCode === 'OVERNIGHT' && item.slotCode === terminal.slotCode)
-            && (pinned.groupCode !== terminal.groupCode
-            || item.slotCode !== terminal.slotCode || item.groupCode !== terminal.groupCode)) {
+            && ((policy?.fixedExclusive ?? true) || item.slotCode === terminal.slotCode)
+            && (item.groupCode !== terminal.groupCode || item.slotCode !== terminal.slotCode)) {
           expected.delete(pinned.id)
         }
       })
@@ -455,60 +450,26 @@ function validatePowerBankDuties(duties: PowerBankDuty[], people: Person[]) {
       errors.push(`${duty.direction === 'TO_WAREHOUSE' ? '送入仓库' : '推回'}人员必须是${duty.groupCode}组启用人员`)
     }
   }
-  if (seenDirections.size !== expectedDirections.size) errors.push('推电宝需要分别安排一名送入仓库和推回人员')
   return [...new Set(errors)]
 }
 
-function reconcileTerminals(assignments: Assignment[], people: Person[]) {
-  const next = assignments.map((assignment) => ({ ...assignment, personIds: [...assignment.personIds] }))
-  for (const terminal of next.filter((assignment) => assignment.positionCode === 'TERMINAL')) {
-    const taken = new Set<string>()
-    next
-      .filter((assignment) => assignment.slotCode === terminal.slotCode && assignment.groupCode === terminal.groupCode
-        && assignment.positionCode !== 'TERMINAL' && assignment.positionCode !== 'OVERNIGHT')
-      .forEach((assignment) => assignment.personIds.forEach((id) => taken.add(id)))
-    const available = people.filter((person) => person.enabled && person.groupCode === terminal.groupCode
-      && !taken.has(person.id)
-      && !next.some((item) => item !== terminal && item.fixedPersonId === person.id
-        && !(item.slotCode === terminal.slotCode && item.positionCode === 'OVERNIGHT')))
-    const fixedPerson = people.find((person) => person.id === terminal.fixedPersonId && person.enabled)
-    if (fixedPerson && !taken.has(fixedPerson.id) && !available.some((person) => person.id === fixedPerson.id)) {
-      available.push(fixedPerson)
-    }
-    if (terminal.slotCode === 'NEXT_DAY_0530_0800' || terminal.slotCode === 'NEXT_DAY_0800_0900') {
-      const previous = fixedPerson ?? terminal.personIds.map((id) => available.find((person) => person.id === id)).find(Boolean)
-      const replacement = previous ?? available.find((person) => !person.qualifiedPositionCodes.includes('BOMB')) ?? available[0]
-      terminal.personIds = replacement ? [replacement.id] : []
-      const bomb = next.find((assignment) => assignment.slotCode === terminal.slotCode
-        && assignment.groupCode === terminal.groupCode && assignment.positionCode === 'BOMB')
-      if (bomb) {
-        const assignedElsewhere = new Set(next
-          .filter((assignment) => assignment.slotCode === terminal.slotCode && assignment.groupCode === terminal.groupCode
-            && assignment.positionCode !== 'BOMB' && assignment.positionCode !== 'TERMINAL'
-            && assignment.positionCode !== 'OVERNIGHT')
-          .flatMap((assignment) => assignment.personIds))
-        bomb.personIds = people
-          .filter((person) => person.enabled && (person.groupCode === terminal.groupCode || person.id === bomb.fixedPersonId)
-            && person.qualifiedPositionCodes.includes('BOMB') && !assignedElsewhere.has(person.id)
-            && !next.some((item) => item !== bomb && item.fixedPersonId === person.id
-              && !(item.slotCode === bomb.slotCode && item.positionCode === 'OVERNIGHT'))
-            && person.id !== replacement?.id)
-          .map((person) => person.id)
-      }
-    } else {
-      terminal.personIds = available.map((person) => person.id)
-    }
+function reconcileTerminals(assignments: Assignment[], people: Person[], policy?: SchedulingRules) {
+  const next = assignments.map(a => ({ ...a, personIds: [...a.personIds] }))
+  for (const remainder of next.filter(a => a.positionCode === remainderPosition(a.slotCode, policy))) {
+    const taken = new Set(next.filter(a => a.slotCode === remainder.slotCode && a !== remainder && a.positionCode !== 'OVERNIGHT').flatMap(a => a.personIds))
+    remainder.personIds = people.filter(p => p.enabled && (p.groupCode === remainder.groupCode || p.id === remainder.fixedPersonId)
+      && (remainder.positionCode === 'TERMINAL' || p.qualifiedPositionCodes.includes(remainder.positionCode))
+      && !taken.has(p.id) && (!(policy?.fixedExclusive ?? true) || !next.some(a => a !== remainder && a.fixedPersonId === p.id
+        && !(a.slotCode === remainder.slotCode && a.positionCode === 'OVERNIGHT')))).map(p => p.id)
   }
   const supervisors = new Set<string>()
-  for (const terminal of next.filter((assignment) => assignment.positionCode === 'TERMINAL').sort((a, b) => a.slotSequence - b.slotSequence)) {
-    const oldSupervisor = terminal.terminalSupervisorId
-    if (oldSupervisor && terminal.personIds.includes(oldSupervisor) && !supervisors.has(oldSupervisor)) {
-      supervisors.add(oldSupervisor)
-      continue
-    }
-    const replacement = terminal.personIds.find((id) => !supervisors.has(id)) ?? null
-    terminal.terminalSupervisorId = replacement
-    if (replacement) supervisors.add(replacement)
+  for (const terminal of next.filter(a => a.positionCode === 'TERMINAL').sort((a, b) => a.slotSequence - b.slotSequence)) {
+    if (policy?.supervisorRequired === false) { terminal.terminalSupervisorId = null; continue }
+    const valid = (id: string) => terminal.personIds.includes(id) && (!(policy?.supervisorNoRepeat ?? true) || !supervisors.has(id))
+    const supervisor = terminal.terminalSupervisorId && valid(terminal.terminalSupervisorId)
+      ? terminal.terminalSupervisorId : terminal.personIds.find(valid) ?? null
+    terminal.terminalSupervisorId = supervisor
+    if (supervisor) supervisors.add(supervisor)
   }
   return next
 }
@@ -643,7 +604,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       const groups = value(0, [] as Group[], '组别')
       const positions = value(1, [] as Position[], '岗位')
       const people = value(2, [] as Person[], '人员')
-      const slots = value(3, [] as TimeSlot[], '时段')
+      let slots = value(3, [] as TimeSlot[], '时段')
       const template = value(4, null as RotationTemplate | null, '轮班模板')
       const currentRequirements = value(5, [] as Requirement[], '日期需求')
       const powerBankOrder = value(6, {} as Record<string, string[]>, '推电宝轮换顺序')
@@ -672,6 +633,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
         localStorage.removeItem(`shiftbalance.candidate.${selectedDate}`)
         candidate = null
       }
+      if (candidate?.rules) slots = ruleTimeSlots(candidate.rules)
       const assignments = makeAssignments(requirements, slots, candidate?.assignments)
       setDay({ groups, powerBankOrder, positions, people, slots, template, requirements, candidate, assignments, messages, loading: false, errors })
       setDraft(null)
@@ -687,14 +649,19 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     }
   }, [selectedDate, apiBase, reloadKey])
 
-  const cycle = useMemo(() => groupForDate(selectedDate, day.template, day.groups), [selectedDate, day.template, day.groups])
+  const currentCycle = groupForDate(selectedDate, day.template, day.groups)
+  const displayRotation = day.candidate?.rotation ? { ...day.candidate.rotation, rules: day.candidate.rules } : day.template
+  const cycle = groupForDate(selectedDate, displayRotation, day.groups)
+  const activeRules = day.candidate ? day.candidate.rules : day.template?.rules
+  const manualMode = day.candidate?.manualMode ?? false
+  const replacementLabel = activeRules?.replacementLabel ?? '换廖'
   const activeAssignments = draft ?? day.assignments
   const preferredBombReplacements = editing
     ? bombReplacementDraft ?? day.candidate?.bombReplacements
     : day.candidate?.bombReplacements
   const bombReplacementBySlot = useMemo(
-    () => chooseBombReplacements(activeAssignments, day.people, preferredBombReplacements),
-    [activeAssignments, day.people, preferredBombReplacements],
+    () => chooseBombReplacements(activeAssignments, day.people, preferredBombReplacements, activeRules, manualMode),
+    [activeAssignments, day.people, preferredBombReplacements, activeRules, manualMode],
   )
   const activePowerBankDuties = editing
     ? powerBankDraft ?? day.candidate?.powerBankDuties ?? []
@@ -705,9 +672,9 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   }, [day.requirements, day.slots])
   const groupMap = useMemo(() => new Map(day.groups.map((item) => [item.code, item.name])), [day.groups])
   const positionMap = useMemo(() => new Map(day.positions.map((item) => [item.code, item.name])), [day.positions])
-  const errors = useMemo(() => editing
-    ? [...validateAssignments(activeAssignments, day.people), ...validatePowerBankDuties(activePowerBankDuties, day.people)]
-    : [], [activeAssignments, activePowerBankDuties, day.people, editing])
+  const errors = useMemo(() => editing && !manualMode
+    ? [...validateAssignments(activeAssignments, day.people, activeRules), ...validatePowerBankDuties(activePowerBankDuties, day.people)]
+    : [], [activeAssignments, activePowerBankDuties, day.people, editing, activeRules, manualMode])
   const assignedPeopleCount = useMemo(() => {
     const ids = new Set(activeAssignments.flatMap((assignment) => assignment.personIds))
     return ids.size
@@ -749,13 +716,17 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   }, [editing])
 
   const updateDraft = (change: (items: Assignment[]) => Assignment[]) => {
-    setDraft((previous) => reconcileTerminals(change(previous ?? day.assignments), day.people))
+    setDraft((previous) => {
+      const next = change(previous ?? day.assignments)
+      return manualMode ? next.map(a => ({ ...a, terminalSupervisorId: a.terminalSupervisorId && a.personIds.includes(a.terminalSupervisorId) ? a.terminalSupervisorId : null }))
+        : reconcileTerminals(next, day.people, activeRules)
+    })
   }
 
   const startEditing = () => {
     if (day.candidate?.status !== 'CANDIDATE') return
     setDraft(day.assignments.map((assignment) => ({ ...assignment, personIds: [...assignment.personIds] })))
-    setPowerBankDraft((day.candidate.powerBankDuties ?? []).map((duty) => ({ ...duty })))
+    setPowerBankDraft(editablePowerDuties(day.candidate, day.groups[0]?.code ?? 'A').map((duty) => ({ ...duty })))
     setBombReplacementDraft(Object.fromEntries(bombReplacementBySlot))
     setEditing(true)
     setNotice('')
@@ -771,12 +742,11 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   }
 
   const generate = async () => {
-    if (cycle?.isWorkday === false || day.requirements.length === 0) return
-    const periodStart = workPeriodStartDate(selectedDate, day.template)
-    if (!periodStart) return
-    const periodDates = [periodStart, shiftDate(periodStart, 1)]
+    if (groupForDate(selectedDate, day.template, day.groups)?.isWorkday === false) return
+    const periodDates = workPeriodDates(selectedDate, day.template)
+    if (!periodDates.length) return
     const hasExistingSchedule = periodDates.some((date) => readCandidateMeta(date) !== null)
-    if (hasExistingSchedule && !(await confirmAction('重新生成两天排班', '当前待发布版本和手动调整会转入历史记录；已发布版本会保留，直到新版本发布。新生成的排班仍需人工发布才计入统计。'))) return
+    if (hasExistingSchedule && !(await confirmAction('重新生成工作周期排班', '当前待发布版本和手动调整会转入历史记录；已发布版本会保留，直到新版本发布。新生成的排班仍需人工发布才计入统计。'))) return
     setGenerating(true)
     setNotice('')
     try {
@@ -784,7 +754,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
         method: 'POST',
         body: JSON.stringify({ scheduleDate: selectedDate }),
       })
-      if (!['OPTIMAL', 'FEASIBLE'].includes(result.status) || result.days.some((item) => !item.schedule.scheduleId)) {
+      if (!['OPTIMAL', 'FEASIBLE', 'MANUAL'].includes(result.status) || result.days.some((item) => !item.schedule.scheduleId)) {
         setNotice(result.messages?.join('；') || `排班未生成（${result.status}）`)
         return
       }
@@ -794,19 +764,18 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       }))
       const selected = result.days.find((item) => item.scheduleDate === selectedDate)
       if (!selected?.schedule.scheduleId) throw new Error('接口没有返回所选日期的排班编号。')
-      const record = candidateRecord({
-        ...selected.schedule,
-        status: 'CANDIDATE',
-        scheduleId: selected.schedule.scheduleId,
-        version: selected.schedule.version ?? 1,
-      })
-      const assignments = makeAssignments(selected.requirements, day.slots, selected.schedule.assignments)
-      setDay((previous) => ({ ...previous, requirements: selected.requirements, candidate: record, assignments, messages: selected.schedule.messages ?? [], errors: [] }))
-      setDraft(null)
-      setPowerBankDraft(null)
-      setBombReplacementDraft(null)
-      setEditing(false)
-      setNotice(`${result.workPeriodStartDate} 至 ${result.workPeriodEndDate} 的两天排班已生成并保存为待发布版本。`)
+      const record = await apiRequest<ScheduleRecord>(apiBase, `/api/schedules/${selected.schedule.scheduleId}`)
+      const slots = record.rules ? ruleTimeSlots(record.rules) : day.slots
+      const requirements = record.requirements ?? selected.requirements
+      const assignments = makeAssignments(requirements, slots, record.assignments)
+      setDay((previous) => ({ ...previous, slots, requirements, candidate: record, assignments, messages: selected.schedule.messages ?? [], errors: [] }))
+      setDraft(record.manualMode ? assignments : null)
+      setPowerBankDraft(record.manualMode ? editablePowerDuties(record, day.groups[0]?.code ?? 'A') : null)
+      setBombReplacementDraft(record.manualMode ? record.bombReplacements ?? {} : null)
+      setEditing(!!record.manualMode)
+      setNotice(result.status === 'MANUAL'
+        ? '自动排班未能全部完成，失败日期已切换为手工模式；可自由调整、保存并发布。'
+        : `${result.workPeriodStartDate} 至 ${result.workPeriodEndDate} 的工作周期排班已生成并保存为待发布版本。`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '排班生成失败')
     } finally {
@@ -830,11 +799,12 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
             terminalSupervisorId: assignment.positionCode === 'TERMINAL' ? assignment.terminalSupervisorId : null,
           })),
           bombReplacements: Object.fromEntries(bombReplacementBySlot),
-          powerBankDuties: (powerBankDraft ?? []).map(({ direction, groupCode, personId }) => ({ direction, groupCode, personId })),
+          powerBankDuties: (powerBankDraft ?? []).filter(d => !manualMode || d.personId).map(({ direction, groupCode, personId }) => ({ direction, groupCode, personId })),
         }),
       })
-      const assignments = makeAssignments(day.requirements, day.slots, saved.assignments)
-      setDay((previous) => ({ ...previous, candidate: saved, assignments, messages: [] }))
+      const requirements = saved.requirements ?? day.requirements
+      const assignments = makeAssignments(requirements, day.slots, saved.assignments)
+      setDay((previous) => ({ ...previous, requirements, candidate: saved, assignments, messages: [] }))
       writeCandidateMeta(selectedDate, { scheduleId: saved.scheduleId, requirements: day.requirements })
       setDraft(null)
       setPowerBankDraft(null)
@@ -852,7 +822,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   const exportImage = async (record: ScheduleRecord, automatic = false) => {
     setExporting(true)
     try {
-      const rotation = groupForDate(record.scheduleDate, day.template, day.groups)
+      const rotation = groupForDate(record.scheduleDate, record.rotation ? { ...record.rotation, rules: record.rules } : day.template, day.groups)
       await downloadScheduleImage(record, day.people, rotation?.isWorkday ? `${rotation.early}组早下 · ${rotation.late}组晚下` : '当日排班')
       setNotice(automatic ? '排班已发布，PNG 图片已生成并发起下载。' : 'PNG 图片已生成并发起下载。')
     } catch (error) {
@@ -888,12 +858,13 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   }
 
   const eligibleFor = (assignment: Assignment, assignments: Assignment[] = activeAssignments, excludedIds: string[] = []) => {
+    if (manualMode) return day.people.filter(person => !assignment.personIds.includes(person.id) && !excludedIds.includes(person.id))
     const assignedElsewhere = new Set(assignment.positionCode === 'OVERNIGHT' ? [] : assignments
-      .filter((item) => item.slotCode === assignment.slotCode && item.positionCode !== 'TERMINAL'
+      .filter((item) => item.slotCode === assignment.slotCode && item.positionCode !== remainderPosition(item.slotCode, activeRules)
         && item.positionCode !== 'OVERNIGHT' && item !== assignment)
       .flatMap((item) => item.personIds))
     const flowUsed = new Set(
-      assignment.positionCode === 'FLOW'
+      (activeRules?.flowNoRepeat ?? true) && assignment.positionCode === 'FLOW'
         ? assignments.filter((item) => item.positionCode === 'FLOW' && item !== assignment).flatMap((item) => item.personIds)
         : [],
     )
@@ -907,7 +878,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     return day.people.filter((person) =>
       person.enabled &&
       (person.groupCode === assignment.groupCode || person.id === assignment.fixedPersonId) &&
-      !fixedElsewhere.has(person.id) &&
+      (!(activeRules?.fixedExclusive ?? true) || !fixedElsewhere.has(person.id) || person.id === assignment.fixedPersonId) &&
       !excludedIds.includes(person.id) &&
       !assignment.personIds.includes(person.id) &&
       !assignedElsewhere.has(person.id) &&
@@ -923,12 +894,12 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   }
 
   const removePerson = (assignment: Assignment, personId: string) => {
-    if (personId === assignment.fixedPersonId) return
+    if (!manualMode && personId === assignment.fixedPersonId) return
     updateDraft((items) => {
       const next = items.map((item) => item === assignment
         ? { ...item, personIds: item.personIds.filter((id) => id !== personId) }
         : item)
-      if (assignment.positionCode !== 'MEAL') return next
+      if (manualMode || assignment.positionCode !== 'MEAL') return next
 
       const meal = next.find((item) => item.slotCode === assignment.slotCode
         && item.positionCode === assignment.positionCode && item.groupCode === assignment.groupCode)
@@ -952,10 +923,10 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       ? null
       : activeAssignments.find((item) => assignmentKey(item) === targetKey)
     if ((sourceKey !== REST_DROP_KEY && !source) || (targetKey !== REST_DROP_KEY && !target)) return
-    if ((source?.fixedPersonId === personId && target?.positionCode !== 'OVERNIGHT') || target?.personIds.includes(personId)) return
+    if ((!manualMode && source?.fixedPersonId === personId && target?.positionCode !== 'OVERNIGHT') || target?.personIds.includes(personId)) return
 
-    const independent = source?.positionCode === 'OVERNIGHT' || target?.positionCode === 'OVERNIGHT'
-    if (targetKey === REST_DROP_KEY && (!source || source.positionCode === 'OVERNIGHT')) return
+    const independent = !manualMode && (source?.positionCode === 'OVERNIGHT' || target?.positionCode === 'OVERNIGHT')
+    if (targetKey === REST_DROP_KEY && (!source || (!manualMode && source.positionCode === 'OVERNIGHT'))) return
 
     const next = activeAssignments.map((item) => {
       if (!independent && source && assignmentKey(item) === sourceKey) {
@@ -966,7 +937,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
 
     if (target) {
       const nextTarget = next.find((item) => assignmentKey(item) === targetKey)
-      if (!nextTarget || (nextTarget.maxCount !== null && nextTarget.personIds.length >= nextTarget.maxCount)
+      if (!nextTarget || (!manualMode && nextTarget.maxCount !== null && nextTarget.personIds.length >= nextTarget.maxCount)
         || !eligibleFor(nextTarget, next).some((person) => person.id === personId)) {
         setNotice('无法拖入该岗位：请确认组别、岗位资格和人数上限。')
         return
@@ -974,7 +945,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       nextTarget.personIds.push(personId)
     }
 
-    if (!independent && source?.positionCode === 'MEAL') {
+    if (!manualMode && !independent && source?.positionCode === 'MEAL') {
       const meal = next.find((item) => assignmentKey(item) === sourceKey)
       if (meal) {
         // ponytail: preserve the existing meal-minimum refill behavior after a drag out.
@@ -1038,7 +1009,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
   const changePowerBankPerson = (direction: PowerBankDuty['direction'], personId: string) => {
     const person = day.people.find((item) => item.id === personId)
     setPowerBankDraft((items) => (items ?? []).map((item) => item.direction === direction
-      ? { ...item, personId, personName: person?.name ?? item.personName }
+      ? { ...item, personId: personId ?? '', personName: person?.name ?? '', groupCode: manualMode ? person?.groupCode ?? item.groupCode : item.groupCode }
       : item))
   }
 
@@ -1065,11 +1036,11 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     setActiveModule('schedule')
   }
   const displayAssignments = activeAssignments
-  const overnightAssignment = displayAssignments.find((assignment) => assignment.positionCode === 'OVERNIGHT')
+  const overnightAssignments = displayAssignments.filter((assignment) => assignment.positionCode === 'OVERNIGHT')
   const powerBankDuties = [...activePowerBankDuties].sort((a, b) => Number(a.direction === 'TO_WAREHOUSE') - Number(b.direction === 'TO_WAREHOUSE'))
   const scheduleRows: ScheduleRow[] = [
     ...slotRows.filter((slot) => slot.dayOffset === 0).map((slot) => ({ key: slot.code, kind: 'slot' as const, slot })),
-    ...(overnightAssignment ? [{ key: 'overnight', kind: 'overnight' as const, slot: null }] : []),
+    ...overnightAssignments.map(overnight => ({ key: `overnight:${assignmentKey(overnight)}`, kind: 'overnight' as const, slot: null, overnight })),
     ...(powerBankDuties.length ? [{ key: 'powerbank', kind: 'powerbank' as const, slot: null }] : []),
     ...slotRows.filter((slot) => slot.dayOffset > 0).map((slot) => ({ key: slot.code, kind: 'slot' as const, slot })),
   ]
@@ -1084,14 +1055,14 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
     {personChip(id, day.people, `${ROLE_CLASS[role]}-chip`)}
     {editing && <Button className="remove-chip" type="text" danger size="small" aria-label={`移除 ${personName(id, day.people)}`} icon={<Icon name="close" size={12} />} onPointerDown={(event) => event.stopPropagation()} onClick={() => removePerson(assignment, id)} />}
   </div>
-  const renderDerivedPerson = (id: string, className: string, tag?: string) => <span
+  const renderDerivedPerson = (id: string, className: string, tag?: string, assignment?: Assignment) => <span
     className={`person-drag-wrap${editing ? ' draggable-person' : ''}${personDrag?.personId === id && personDrag.sourceKey === REST_DROP_KEY ? ' drag-source' : ''}`}
     key={`derived-${className}-${id}`}
     draggable={editing}
-    onPointerDown={(event) => beginPersonDrag(event, id, REST_DROP_KEY)}
-    onDragStart={(event) => startNativePersonDrag(event, id, REST_DROP_KEY)}
+    onPointerDown={(event) => beginPersonDrag(event, id, assignment ? assignmentKey(assignment) : REST_DROP_KEY)}
+    onDragStart={(event) => startNativePersonDrag(event, id, assignment ? assignmentKey(assignment) : REST_DROP_KEY)}
     onDragEnd={endNativePersonDrag}
-  >{personChip(id, day.people, className, tag)}</span>
+  >{personChip(id, day.people, className, tag)}{editing && assignment && (manualMode || remainderPosition(assignment.slotCode, activeRules) !== 'TERMINAL') && <Button type="text" danger size="small" aria-label={`移除 ${personName(id, day.people)}`} icon={<Icon name="close" size={12} />} onPointerDown={event => event.stopPropagation()} onClick={() => removePerson(assignment, id)} />}</span>
   const assignmentPeople = (assignment: Assignment, role: string) => <div className="chip-list" data-drop-assignment-key={assignmentKey(assignment)} data-drop-hover={personDragTarget === assignmentKey(assignment) ? 'true' : undefined}>{assignment.personIds.map((id) => renderAssignmentPerson(id, assignment, role))}{!assignment.personIds.length && <span className="empty-mark">—</span>}</div>
   const assignmentEditor = (assignment: Assignment, role: string) => editing && <div className="add-person-control">{addKey === `${assignment.slotCode}:${role}` ? <Select autoFocus open showSearch size="small" placeholder="选择人员…" options={eligibleFor(assignment).map((person) => ({ value: person.id, label: person.name }))} onChange={(value) => addPerson(assignment, value)} onOpenChange={(open) => { if (!open) setAddKey(null) }} /> : <Button className="add-person-button" type="dashed" size="small" disabled={eligibleFor(assignment).length === 0} icon={<Icon name="plus" size={13} />} onClick={() => setAddKey(`${assignment.slotCode}:${role}`)}>添加</Button>}</div>
   const scheduleColumns: TableColumnsType<ScheduleRow> = [
@@ -1113,17 +1084,17 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
       onCell: (row: ScheduleRow) => row.kind === 'overnight' || row.kind === 'powerbank'
         ? role === 'BOMB'
           ? {
-            className: `role-cell ${row.kind}-summary-cell${row.kind === 'overnight' && personDragTarget === (overnightAssignment ? assignmentKey(overnightAssignment) : '') ? ' drop-hover' : ''}`,
+            className: `role-cell ${row.kind}-summary-cell${row.kind === 'overnight' && personDragTarget === (row.overnight ? assignmentKey(row.overnight) : '') ? ' drop-hover' : ''}`,
             colSpan: ROLE_ORDER.length,
-            ...(row.kind === 'overnight' && overnightAssignment ? { 'data-drop-assignment-key': assignmentKey(overnightAssignment) } : {}),
-            ...(row.kind === 'overnight' && overnightAssignment && personDragTarget === assignmentKey(overnightAssignment) ? { 'data-drop-hover': 'true' } : {}),
+            ...(row.kind === 'overnight' && row.overnight ? { 'data-drop-assignment-key': assignmentKey(row.overnight) } : {}),
+            ...(row.kind === 'overnight' && row.overnight && personDragTarget === assignmentKey(row.overnight) ? { 'data-drop-hover': 'true' } : {}),
           }
           : { colSpan: 0 }
         : (() => {
           const assignment = row.slot
             ? displayAssignments.find((item) => item.slotCode === row.slot?.code && item.positionCode === role)
             : undefined
-          const dropKey = role === 'REST' || role === 'TERMINAL' ? REST_DROP_KEY : assignment ? assignmentKey(assignment) : undefined
+          const dropKey = role === 'REST' ? REST_DROP_KEY : assignment ? assignmentKey(assignment) : undefined
           return {
             className: `role-cell role-${ROLE_CLASS[role]}${role === 'TERMINAL' ? ' terminal-cell' : ''}${role === 'REST' ? ' rest-cell' : ''}${dropKey && personDragTarget === dropKey ? ' drop-hover' : ''}`,
             'data-role': ROLE_LABELS[role],
@@ -1138,6 +1109,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
         : <div className="schedule-column-title"><span>{ROLE_LABELS[role]}</span><small>{demandHeader(role, day.requirements)}</small></div>,
       render: (_value: unknown, row: ScheduleRow) => {
         if (row.kind === 'overnight') {
+          const overnightAssignment = row.overnight
           if (role !== 'BOMB' || !overnightAssignment) return null
           return <div className="overnight-row-content"><div className="overnight-row-heading"><Tag color="purple">过夜人员</Tag><span>{groupMap.get(overnightAssignment.groupCode) ?? `${overnightAssignment.groupCode}组`} · {overnightAssignment.slotLabel}</span></div>{assignmentPeople(overnightAssignment, 'OVERNIGHT')}{assignmentEditor(overnightAssignment, 'OVERNIGHT')}</div>
         }
@@ -1146,19 +1118,21 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
           return <div className="powerbank-row-content">{powerBankDuties.map((duty) => <div className="powerbank-duty" key={duty.direction}>
             <Tag color={duty.direction === 'TO_WAREHOUSE' ? 'orange' : 'cyan'}>{duty.direction === 'TO_WAREHOUSE' ? '当天晚上送仓' : '当天早上推回'}</Tag>
             {editing ? <>
-              <span>{groupMap.get(duty.groupCode) ?? `${duty.groupCode}组`} · {duty.direction === 'TO_WAREHOUSE' ? '19:30–结束' : '05:30–08:00'}</span>
+              <span>{groupMap.get(duty.groupCode) ?? `${duty.groupCode}组`} · {powerDutyLabel(duty.direction, activeRules)}</span>
               <Select
                 aria-label={`${duty.direction === 'TO_WAREHOUSE' ? '当天晚上推入仓库' : '当天早上推回'}人员`}
                 size="small"
                 showSearch
                 optionFilterProp="label"
-                value={duty.personId}
+                allowClear={manualMode}
+                placeholder="选择人员"
+                value={duty.personId || undefined}
                 options={day.people
-                  .filter((person) => person.enabled && person.groupCode === duty.groupCode)
+                  .filter((person) => manualMode || (person.enabled && person.groupCode === duty.groupCode))
                   .map((person) => ({ value: person.id, label: person.name }))}
                 onChange={(personId) => changePowerBankPerson(duty.direction, personId)}
               />
-            </> : <span>{groupMap.get(duty.groupCode) ?? `${duty.groupCode}组`} · {duty.direction === 'TO_WAREHOUSE' ? '19:30–结束' : '05:30–08:00'} · <strong>{duty.personName}</strong></span>}
+            </> : <span>{groupMap.get(duty.groupCode) ?? `${duty.groupCode}组`} · {powerDutyLabel(duty.direction, activeRules)} · <strong>{duty.personName}</strong></span>}
           </div>)}</div>
         }
         const slot = row.slot!
@@ -1180,27 +1154,28 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
         if (role === 'TERMINAL') {
           const terminalPeople = assignment.personIds
           const supervisorOptions = terminal?.personIds
-            .filter((id) => !activeAssignments.some((other) => other.positionCode === 'TERMINAL' && other.slotCode !== terminal.slotCode && other.terminalSupervisorId === id))
+            .filter((id) => manualMode || !(activeRules?.supervisorNoRepeat ?? true) || !activeAssignments.some((other) => other.positionCode === 'TERMINAL' && other.slotCode !== terminal.slotCode && other.terminalSupervisorId === id))
             .map((id) => ({ value: id, label: personName(id, day.people) })) ?? []
           return <>
-            {terminalPeople.length ? <div className="chip-list" data-drop-assignment-key={REST_DROP_KEY} data-drop-hover={personDragTarget === REST_DROP_KEY ? 'true' : undefined}>{terminalPeople.map((id) => id === assignment.terminalSupervisorId
-              ? renderDerivedPerson(id, `supervisor-chip${bombReplacementBySlot.get(slot.code) === id ? ' bomb-replacement-chip' : ''}`, bombReplacementBySlot.get(slot.code) === id ? '监管 · 换廖' : '监管')
-              : renderDerivedPerson(id, `terminal-chip${bombReplacementBySlot.get(slot.code) === id ? ' bomb-replacement-chip' : ''}`, bombReplacementBySlot.get(slot.code) === id ? '换廖' : undefined))}</div> : <span className="empty-mark">—</span>}
-            {editing && <small className="derived-note">按剩余在岗人员自动计算</small>}
-            {editing && bombReplacementBySlot.has(slot.code) && <div className="supervisor-select-wrap">
-              <span>换廖</span>
+            {terminalPeople.length ? <div className="chip-list" data-drop-assignment-key={assignmentKey(assignment)} data-drop-hover={personDragTarget === assignmentKey(assignment) ? 'true' : undefined}>{terminalPeople.map((id) => id === assignment.terminalSupervisorId
+              ? renderDerivedPerson(id, `supervisor-chip${bombReplacementBySlot.get(slot.code) === id ? ' bomb-replacement-chip' : ''}`, bombReplacementBySlot.get(slot.code) === id ? `监管 · ${replacementLabel}` : '监管', assignment)
+              : renderDerivedPerson(id, `terminal-chip${bombReplacementBySlot.get(slot.code) === id ? ' bomb-replacement-chip' : ''}`, bombReplacementBySlot.get(slot.code) === id ? replacementLabel : undefined, assignment))}</div> : <span className="empty-mark">—</span>}
+            {editing && !manualMode && remainderPosition(slot.code, activeRules) === 'TERMINAL' ? <small className="derived-note">按剩余在岗人员自动计算</small> : assignmentEditor(assignment, 'TERMINAL')}
+            {editing && (manualMode || bombReplacementBySlot.has(slot.code)) && <div className="supervisor-select-wrap">
+              <span>{replacementLabel}</span>
               <Select
-                aria-label={`${slot.label}换廖人员`}
+                aria-label={`${slot.label}${replacementLabel}人员`}
                 size="small"
                 showSearch
                 optionFilterProp="label"
+                allowClear={manualMode}
                 value={bombReplacementBySlot.get(slot.code)}
-                options={day.people.filter((person) => person.enabled && terminalPeople.includes(person.id))
+                options={day.people.filter((person) => (manualMode || person.enabled) && terminalPeople.includes(person.id))
                   .map((person) => ({ value: person.id, label: person.name }))}
-                onChange={(value) => setBombReplacementDraft({ ...Object.fromEntries(bombReplacementBySlot), [slot.code]: value })}
+                onChange={(value) => { const next = Object.fromEntries(bombReplacementBySlot); if (value) next[slot.code] = value; else delete next[slot.code]; setBombReplacementDraft(next) }}
               />
             </div>}
-            {editing && terminal?.personIds.length ? <div className="supervisor-select-wrap"><span>监管</span><Select aria-label={`${slot.label}监管人员`} size="small" placeholder="选择监管人员" value={terminal.terminalSupervisorId ?? undefined} options={supervisorOptions} onChange={(value) => updateDraft((items) => items.map((item) => item === terminal ? { ...item, terminalSupervisorId: value } : item))} /></div> : null}
+            {editing && (manualMode || (activeRules?.supervisorRequired ?? true)) && terminal?.personIds.length ? <div className="supervisor-select-wrap"><span>监管</span><Select aria-label={`${slot.label}监管人员`} size="small" placeholder="选择监管人员" allowClear={manualMode} value={terminal.terminalSupervisorId ?? undefined} options={supervisorOptions} onChange={(value) => updateDraft((items) => items.map((item) => item === terminal ? { ...item, terminalSupervisorId: value ?? null } : item))} /></div> : null}
           </>
         }
         return <>{assignmentPeople(assignment, role)}{assignmentEditor(assignment, role)}</>
@@ -1314,16 +1289,16 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                   ) : day.candidate?.status === 'CANDIDATE' ? (
                     <>
                       <Button className="button button-quiet" onClick={startEditing} icon={<Icon name="edit" size={17} />}>调整排班</Button>
-                      <Button className="button button-quiet" disabled={generating || publishing || day.loading || cycle?.isWorkday === false} loading={generating} onClick={() => void generate()} icon={<Icon name="spark" size={17} />}>{generating ? '生成中…' : '重新生成两天'}</Button>
+                      <Button className="button button-quiet" disabled={generating || publishing || day.loading || currentCycle?.isWorkday === false} loading={generating} onClick={() => void generate()} icon={<Icon name="spark" size={17} />}>{generating ? '生成中…' : '重新生成周期'}</Button>
                       <Button className="button button-primary" type="primary" disabled={saving || publishing || errors.length > 0} loading={publishing} onClick={() => void publish()} icon={<Icon name="check" size={17} />}>{publishing ? '发布中…' : '发布当前排班'}</Button>
                     </>
                   ) : day.candidate?.status === 'PUBLISHED' ? (
                     <>
                       <Button className="button button-quiet" loading={exporting} disabled={day.loading || publishing || generating} onClick={() => { if (day.candidate) void exportImage(day.candidate) }}>导出 PNG</Button>
-                      <Button className="button button-primary" type="primary" disabled={generating || publishing || exporting || day.loading || cycle?.isWorkday === false} loading={generating} onClick={() => void generate()} icon={<Icon name="spark" size={17} />}>{generating ? '生成中…' : '生成新版本'}</Button>
+                      <Button className="button button-primary" type="primary" disabled={generating || publishing || exporting || day.loading || currentCycle?.isWorkday === false} loading={generating} onClick={() => void generate()} icon={<Icon name="spark" size={17} />}>{generating ? '生成中…' : '生成新版本'}</Button>
                     </>
                   ) : (
-                    <Button className="button button-primary" type="primary" disabled={generating || day.loading || cycle?.isWorkday === false || day.requirements.length === 0} loading={generating} onClick={() => void generate()} icon={<Icon name="spark" size={17} />}>{generating ? '生成中…' : '生成两天排班'}</Button>
+                    <Button className="button button-primary" type="primary" disabled={generating || day.loading || currentCycle?.isWorkday === false || day.requirements.length === 0} loading={generating} onClick={() => void generate()} icon={<Icon name="spark" size={17} />}>{generating ? '生成中…' : '生成工作周期排班'}</Button>
                   )}
                 </div>
               </section>
@@ -1359,11 +1334,13 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                       <h2>{displayDate(selectedDate, { month: 'long', day: 'numeric', weekday: 'long' })} 排班表</h2>
                     </div>
                     <Tag className="status-pill" color={day.candidate?.status === 'PUBLISHED' ? 'success' : day.candidate ? 'processing' : cycle?.isWorkday === false ? 'default' : 'processing'}>{day.loading ? '加载中' : day.candidate?.status === 'PUBLISHED' ? '已发布' : day.candidate ? '待发布' : cycle?.isWorkday === false ? '休息日' : '未生成'}</Tag>
+                    {manualMode && <Tag color="orange">手工排班</Tag>}
                     {cycle?.isWorkday && <Tag className="rotation-pill" color="blue">{cycle.early} 早下 · {cycle.late} 晚下</Tag>}
                   </div>
                   <div className="version-meta">{day.candidate ? <><span>版本 {day.candidate.version}</span><span className="meta-dot">·</span><span>ID {day.candidate.scheduleId}</span></> : <span>{cycle?.isWorkday === false ? '当日无常规工作时段' : '等待生成排班'}</span>}</div>
                 </div>
-                {editing && <Alert className="editing-hint" type="info" showIcon message="编辑中：长按姓名可拖到其他岗位；拖入休 / 维 / 备勤区可移出正式岗位。过夜是独立职责，拖入或拖出不会改变同段正式岗位；推电宝可在对应组内更换。候机楼中的“换廖”人选可通过下拉框更换。岗位仍受组别、资格和人数规则限制，候机楼人员会自动调整。" />}
+                {manualMode && <Alert className="editing-hint" type="warning" showIcon message="手工排班 · 保存和发布不校验排班规则" description={<>自动排班未完成：{day.candidate?.manualReason}。可自由选人、增减和拖动；候机楼与打饭不再自动补人。</>} />}
+                {editing && !manualMode && <Alert className="editing-hint" type="info" showIcon message="编辑中：长按姓名可拖到其他岗位；拖入休 / 维 / 备勤区可移出正式岗位。过夜是独立职责，拖入或拖出不会改变同段正式岗位；推电宝可在对应组内更换。候机楼中的“换廖”人选可通过下拉框更换。岗位仍受组别、资格和人数规则限制，候机楼人员会自动调整。" />}
                 {editing && errors.length > 0 && <Alert className="validation-banner" type="error" showIcon message={`保存前需处理 ${errors.length} 项规则问题`} description={<>{errors.slice(0, 3).join('；')}{errors.length > 3 ? `；另有 ${errors.length - 3} 项` : ''}</>} />}
                 <Table<ScheduleRow> className="schedule-table" columns={scheduleColumns} dataSource={scheduleRows} rowKey="key" rowClassName={(row) => [row.kind === 'overnight' ? 'overnight-row' : row.kind === 'powerbank' ? 'powerbank-row' : '', !day.candidate ? 'empty-candidate-row' : ''].filter(Boolean).join(' ')} size="small" bordered pagination={false} tableLayout="fixed" locale={{ emptyText: emptySchedule }} />
                 {day.messages.length > 0 && <div className="solver-messages">{day.messages.map((message, index) => <p key={`${index}-${message}`}><Icon name="alert" size={15} />{message}</p>)}</div>}
@@ -1387,9 +1364,9 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                 <div className="notes-icon"><Icon name="rules" size={18} /></div>
                 <div className="notes-title"><strong>排班说明</strong><small>由模板和排班规则提供</small></div>
                 <div className="notes-content">
-                  <p><span className="note-index">01</span>日期轮换按模板锚点和上二休二规则计算。</p>
+                  <p><span className="note-index">01</span>日期轮换按模板锚点和已配置的周期规则计算。</p>
                   <p><span className="note-index">02</span>防爆、夹层和回流资格由人员岗位资格管理。</p>
-                  <p><span className="note-index">03</span>常规回流由轮休组承担，夜间回流按需求模板指定轮岗组。</p>
+                  <p><span className="note-index">03</span>各岗位的组别、人数和重复限制按已保存规则执行。</p>
                 </div>
               </Card>
             </div>
@@ -1399,7 +1376,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                 <div className="rail-heading"><span className="rail-icon blue-rail-icon"><Icon name="calendar" size={19} /></span><div><h3>当天概览</h3><small>{displayDate(selectedDate, { month: 'long', day: 'numeric', weekday: 'short' })}</small></div></div>
                 <div className="overview-grid">
                   <div className="overview-tile blue-tile"><Statistic title={cycle?.isWorkday ? '早下组' : '日期状态'} value={cycle?.isWorkday ? cycle.early ?? '—' : cycle ? '休息日' : '未配置'} styles={{ content: { color: '#2374ee' } }} /><small>{cycle?.isWorkday ? '承担对应轮班时段' : '按模板锚点计算'}</small></div>
-                  <div className="overview-tile violet-tile"><Statistic title={cycle?.isWorkday ? '晚下组' : '启用组别'} value={cycle?.isWorkday ? cycle.late ?? '—' : day.groups.length} styles={{ content: { color: '#8059c2' } }} /><small>{cycle?.isWorkday ? '负责过夜安排' : '读取自后端'}</small></div>
+                  <div className="overview-tile violet-tile"><Statistic title={cycle?.isWorkday ? '晚下组' : '启用组别'} value={cycle?.isWorkday ? cycle.late ?? '—' : day.groups.length} styles={{ content: { color: '#8059c2' } }} /><small>{cycle?.isWorkday ? '按岗位需求安排' : '读取自后端'}</small></div>
                   <div className="overview-tile neutral-tile"><Statistic title="有效人员" value={day.loading ? '—' : day.people.filter((person) => person.enabled).length} /><small>按所选日期</small></div>
                   <div className="overview-tile neutral-tile"><Statistic title="已满足岗位" value={day.candidate ? `${satisfiedRows}/${day.requirements.length}` : '—'} /><small>{day.candidate ? '按岗位人数范围核对' : '生成后计算'}</small></div>
                 </div>
@@ -1424,16 +1401,16 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
               <Card className="rotation-card surface" size="small">
                 <div className="rail-section-heading"><div><h3>轮班安排</h3><small>按模板锚点自动推算</small></div><span className="rotation-orbit"><Icon name="history" size={18} /></span></div>
                 {cycle?.isWorkday ? <div className="rotation-flow">
-                  <div className="rotation-step"><span className="rotation-step-label">早下组</span><strong>{groupMap.get(cycle.early ?? '') ?? cycle.early}</strong><small>19:30 下班</small></div>
+                  <div className="rotation-step"><span className="rotation-step-label">早下组</span><strong>{groupMap.get(cycle.early ?? '') ?? cycle.early}</strong><small>按时段规则交接</small></div>
                   <span className="rotation-arrow"><Icon name="arrow" size={17} /></span>
-                  <div className="rotation-step late-step"><span className="rotation-step-label">晚下组</span><strong>{groupMap.get(cycle.late ?? '') ?? cycle.late}</strong><small>负责过夜</small></div>
-                </div> : <div className="rail-empty rotation-empty"><Icon name="clock" size={20} /><span>{cycle ? '今天按上二休二为休息日' : '请配置排班模板中的轮换锚点'}</span></div>}
+                  <div className="rotation-step late-step"><span className="rotation-step-label">晚下组</span><strong>{groupMap.get(cycle.late ?? '') ?? cycle.late}</strong><small>按岗位需求安排</small></div>
+                </div> : <div className="rail-empty rotation-empty"><Icon name="clock" size={20} /><span>{cycle ? '今天按周期规则为休息日' : '请配置排班模板中的轮换锚点'}</span></div>}
                 <div className="rotation-foot"><span className="rotation-line" />不逐日手动调用轮换接口</div>
               </Card>
 
               <Card className="person-order-card surface" size="small">
                 <div className="rail-section-heading"><div><h3>推电宝人员顺序</h3><small>两组各自轮换，每次任务顺延一人</small></div></div>
-                {['B', 'A'].map((groupCode) => <div className={`order-section ${groupCode === 'B' ? 'overnight-order' : 'powerbank-order'}`} key={groupCode}>
+                {Object.keys(day.powerBankOrder).sort().map((groupCode) => <div className={`order-section ${groupCode === 'B' ? 'overnight-order' : 'powerbank-order'}`} key={groupCode}>
                   <div className="order-section-heading"><Tag color={groupCode === 'B' ? 'purple' : 'orange'}>{groupMap.get(groupCode) ?? `${groupCode}组`}</Tag><small>按顺序轮换</small></div>
                   <ol className="order-list" aria-label={`${groupCode}组推电宝人员顺序`}>
                     {(day.powerBankOrder[groupCode] ?? []).map((name, index) => <li key={name}><span className="order-index">{String(index + 1).padStart(2, '0')}</span><span>{name}</span></li>)}

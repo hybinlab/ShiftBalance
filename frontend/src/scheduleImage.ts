@@ -1,4 +1,5 @@
 import type { Person, ScheduleRecord } from './App'
+import { powerDutyLabel, ruleTimeSlots } from './schedulingRules.ts'
 import { chooseBombReplacements } from './bombReplacements.ts'
 
 type Chip = { text: string; tone: string }
@@ -7,8 +8,10 @@ type ImageRow = { label: string; cells: Chip[][]; merged?: boolean }
 export function scheduleImageRows(schedule: ScheduleRecord, people: Person[]): ImageRow[] {
   if (schedule.status !== 'PUBLISHED') throw new Error('仅支持导出已发布排班')
   const assignments = schedule.assignments
-  const replacements = chooseBombReplacements(assignments.map((item) => ({ ...item, personIds: item.people.map((p) => p.id) })), people, schedule.bombReplacements)
-  const slots = [...new Map(assignments.filter((a) => a.positionCode !== 'OVERNIGHT').map((a) => [a.slotCode, a])).values()]
+  const replacements = chooseBombReplacements(assignments.map((item) => ({ ...item, personIds: item.people.map((p) => p.id) })), people, schedule.bombReplacements, schedule.rules, schedule.manualMode)
+  const manualSlots = schedule.manualMode && schedule.rules ? ruleTimeSlots(schedule.rules).filter(slot =>
+    schedule.requirements?.some(r => r.slotCode === slot.code)).map(slot => ({ slotCode: slot.code, slotLabel: slot.label, slotSequence: slot.sequence })) : []
+  const slots = [...new Map([...manualSlots, ...assignments.filter((a) => a.positionCode !== 'OVERNIGHT')].map((a) => [a.slotCode, a])).values()]
     .sort((a, b) => a.slotSequence - b.slotSequence)
   const rows = slots.map((slot): ImageRow => {
     const current = assignments.filter((a) => a.slotCode === slot.slotCode)
@@ -16,7 +19,7 @@ export function scheduleImageRows(schedule: ScheduleRecord, people: Person[]): I
     const chips = (role: string): Chip[] => current.filter((a) => a.positionCode === role).flatMap((a) => a.people.map((p) => {
       const replacement = role === 'TERMINAL' && replacements.get(slot.slotCode) === p.id
       const supervisor = role === 'TERMINAL' && p.terminalSupervisor
-      return { text: `${p.name}${supervisor ? ' 监管' : ''}${replacement ? ' 换廖' : ''}`, tone: replacement ? 'replacement' : supervisor ? 'supervisor' : role }
+      return { text: `${p.name}${supervisor ? ' 监管' : ''}${replacement ? ' ' + (schedule.rules?.replacementLabel ?? '换廖') : ''}`, tone: replacement ? 'replacement' : supervisor ? 'supervisor' : role }
     }))
     return {
       label: slot.slotCode.startsWith('NEXT_DAY') && !slot.slotLabel.includes('次日') ? `次日 ${slot.slotLabel}` : slot.slotLabel,
@@ -31,9 +34,9 @@ export function scheduleImageRows(schedule: ScheduleRecord, people: Person[]): I
     extra.push({ label: '过夜安排', merged: true, cells: [[{ text: `${duty.groupCode}组 · ${duty.slotLabel}`, tone: 'REST' }, ...duty.people.map((p) => ({ text: p.name, tone: 'OVERNIGHT' }))]] })
   }
   for (const duty of [...(schedule.powerBankDuties ?? [])].sort((a, b) => Number(a.direction === 'TO_WAREHOUSE') - Number(b.direction === 'TO_WAREHOUSE'))) {
-    extra.push({ label: '推电宝', merged: true, cells: [[{ text: `${duty.direction === 'TO_WAREHOUSE' ? '当天晚上送仓' : '当天早上推回'} · ${duty.groupCode}组 · ${duty.personName}`, tone: 'power' }]] })
+    extra.push({ label: '推电宝', merged: true, cells: [[{ text: `${duty.direction === 'TO_WAREHOUSE' ? '当天晚上送仓' : '当天早上推回'} · ${duty.groupCode}组 · ${powerDutyLabel(duty.direction, schedule.rules)} · ${duty.personName}`, tone: 'power' }]] })
   }
-  const nextDay = slots.findIndex((slot) => slot.slotCode.startsWith('NEXT_DAY'))
+  const nextDay = slots.findIndex((slot) => schedule.rules ? (schedule.rules.slots.find(s => s.code === slot.slotCode)?.dayOffset ?? 0) > 0 : slot.slotCode.startsWith('NEXT_DAY'))
   rows.splice(nextDay < 0 ? rows.length : nextDay, 0, ...extra)
   return rows
 }
@@ -68,15 +71,17 @@ export async function downloadScheduleImage(schedule: ScheduleRecord, people: Pe
     const columns = column === 2 ? 1 : column === 4 ? 3 : 2
     const cellWidth = (widths[column]! - 24) / columns
     const items = cell.map((chip) => {
-      const suffix = chip.text.match(/(?: (?:监管|换廖|打饭))+$/)?.[0] ?? ''
+      const labels = ['监管', schedule.rules?.replacementLabel ?? '换廖', '打饭'].map(label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      const suffix = chip.text.match(new RegExp(`(?: (?:${labels.join('|')}))+$`))?.[0] ?? ''
       const name = suffix ? chip.text.slice(0, -suffix.length) : chip.text
       const size = column === 4 ? 21 : 27
-      return { name: wrap(name, cellWidth - 12, size), role: suffix.trim().replaceAll(' ', ' · '), tone: chip.tone, size }
+      const role = suffix.trim().replaceAll(' ', ' · ')
+      return { name: wrap(name, cellWidth - 12, size), role, roleLines: wrap(role, cellWidth - 24, 15), tone: chip.tone, size }
     })
     let offset = 0
     const placed = items.map((item, i) => {
       const start = Math.floor(i / columns) * columns
-      const lineHeight = Math.max(...items.slice(start, start + columns).map((entry) => entry.name.length * (entry.size + 7) + (entry.role ? 22 : 0))) + 10
+      const lineHeight = Math.max(...items.slice(start, start + columns).map((entry) => entry.name.length * (entry.size + 7) + entry.roleLines.length * 22)) + 10
       const result = { ...item, x: 12 + (i % columns + 0.5) * cellWidth, y: offset, height: lineHeight }
       if (i % columns === columns - 1 || i === items.length - 1) offset += lineHeight
       return result
@@ -105,11 +110,13 @@ export async function downloadScheduleImage(schedule: ScheduleRecord, people: Pe
   text(rotation, width - margin, 77, 25, ink, true, 'right')
   text(`已发布  /  版本 ${schedule.version}  /  #${schedule.scheduleId}`, width - margin, 120, 19, muted, false, 'right')
   line(margin, 180, width - margin, 180)
-  const legend = [['supervisor', '监管'], ['replacement', '换廖'], ['MEAL', '打饭'], ['OVERNIGHT', '过夜']]
-  legend.forEach(([tone, label], i) => {
-    const x = margin + i * 125
+  const legend = [['supervisor', '监管'], ['replacement', schedule.rules?.replacementLabel ?? '换廖'], ['MEAL', '打饭'], ['OVERNIGHT', '过夜']]
+  let legendX = margin
+  legend.forEach(([tone, label]) => {
+    const x = legendX
     ctx.fillStyle = colors[tone!]!; ctx.beginPath(); ctx.arc(x + 5, 215, 4, 0, Math.PI * 2); ctx.fill()
     text(label!, x + 20, 215, 19, muted)
+    legendX += Math.max(125, ctx.measureText(label!).width + 48)
   })
   text('当日岗位与次日早班', width - margin, 215, 19, muted, false, 'right')
   const headers = ['时间段', '防爆', '候机楼', '夹层', '回流 / 拉包', '休 / 维 / 备勤 / 打饭']
@@ -140,14 +147,14 @@ export async function downloadScheduleImage(schedule: ScheduleRecord, people: Pe
           const cx = x + item.x, cy = y + (h - cell.height) / 2 + item.y
           const color = colors[item.tone] ?? (i === 4 ? '#75838e' : ink)
           item.name.forEach((value, n) => text(value, cx, cy + (n + 0.5) * (item.size + 7), item.size, color, !!item.role, 'center'))
-          if (item.role) {
-            const ry = cy + item.name.length * (item.size + 7) + 9
+          item.roleLines.forEach((role, roleIndex) => {
+            const ry = cy + item.name.length * (item.size + 7) + 9 + roleIndex * 22
             ctx.font = font(15)
-            const badgeWidth = ctx.measureText(item.role).width + 18
+            const badgeWidth = ctx.measureText(role).width + 18
             ctx.fillStyle = item.tone === 'replacement' ? '#fff0cc' : item.tone === 'MEAL' ? '#fcecef' : '#e8f1fc'
             ctx.beginPath(); ctx.roundRect(cx - badgeWidth / 2, ry - 10, badgeWidth, 21, 3); ctx.fill()
-            text(item.role, cx, ry, 15, color, false, 'center')
-          }
+            text(role, cx, ry, 15, color, false, 'center')
+          })
         })
       }
       x += cellWidth

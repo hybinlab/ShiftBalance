@@ -99,6 +99,8 @@ Migration v13 was applied to the shared database `192.168.31.5/shiftbalance` on 
 
 Migration v14 was applied to the shared database `192.168.31.5/shiftbalance` on 2026-11-04 using the table owner `postgres`. The unique-per-group constraint was removed; the primary key, foreign keys, and direction check remain. All 34 existing power bank duty records were preserved.
 
+Migration v15 was applied to the shared database `192.168.31.5/shiftbalance` on 2026-11-16 using the table owner `postgres`. It adds the nullable `schedule_rotation_config.rules` JSONB column. Before and after counts were unchanged: 20 people, 28 schedules, 2,075 assignments, 56 power bank duties and 30 template requirements. The four rule-dependent API endpoints returned HTTP 200 after the migration, without restarting the backend. Other databases still need this migration before deploying the configurable-rules version; see the root README and API.md for the current rule fields and behavior.
+
 ## Request example
 
 ```json

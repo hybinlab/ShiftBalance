@@ -1,3 +1,4 @@
+import type { SchedulingRules } from './schedulingRules'
 import { useEffect, useMemo, useState } from 'react'
 import { App as AntApp, Alert, Button, DatePicker, Drawer, Empty, Input, Space, Spin, Table, Tabs, Tag, type TableColumnsType } from 'antd'
 import { DeleteOutlined, EyeOutlined, ReloadOutlined, RollbackOutlined, SearchOutlined } from '@ant-design/icons'
@@ -25,6 +26,9 @@ type HistoryEntry = {
   powerBankDutyCount: number
 }
 type ScheduleDetail = {
+  manualMode?: boolean
+  manualReason?: string
+  rules?: SchedulingRules
   scheduleId: number
   scheduleDate: string
   status: string
@@ -229,7 +233,7 @@ export default function ScheduleHistoryPage({ apiBase, apiRequest, onOpenSchedul
       render: (people: ScheduleDetail['assignments'][number]['people'], assignment) => people.length
         ? <div className="history-person-list">{people.map((person) => {
           const replacement = assignment.positionCode === 'TERMINAL' && detail?.bombReplacements?.[assignment.slotCode] === person.id
-          return <Tag key={person.id} color={replacement ? 'gold' : person.terminalSupervisor ? 'blue' : undefined}>{person.name}{person.terminalSupervisor ? ' · 监管' : ''}{replacement ? ' · 换廖' : ''}</Tag>
+          return <Tag key={person.id} color={replacement ? 'gold' : person.terminalSupervisor ? 'blue' : undefined}>{person.name}{person.terminalSupervisor ? ' · 监管' : ''}{replacement ? ' · ' + (detail?.rules?.replacementLabel ?? '换廖') : ''}</Tag>
         })}</div>
         : <span className="history-empty-value">—</span>,
     },
@@ -297,7 +301,7 @@ export default function ScheduleHistoryPage({ apiBase, apiRequest, onOpenSchedul
     >
       {detailEntry && <div className="history-detail-content">
         <div className="history-detail-meta">
-          <div><span>版本状态</span>{statusTag(detailEntry)}</div>
+          <div><span>版本状态</span>{statusTag(detailEntry)}{detail?.manualMode && <Tag color="orange">手工排班</Tag>}</div>
           <div><span>生成时间</span><strong>{dateTime(detailEntry.createdAt)}</strong></div>
           <div><span>首次发布时间</span><strong>{dateTime(detailEntry.publishedAt)}</strong></div>
           <div><span>岗位分配</span><strong>{detailEntry.assignmentCount} 次 · {detailEntry.peopleCount} 人</strong></div>

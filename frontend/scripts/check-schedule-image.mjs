@@ -29,4 +29,18 @@ assert.equal(rows[0].cells[4].filter((chip) => chip.tone === 'MEAL').length, 3)
 assert.equal(rows[4].cells[0].filter((chip) => chip.text === '廖家史').length, 1, 'Overnight duty must retain the regular post')
 assert.throws(() => scheduleImageRows({ ...schedule, status: 'CANDIDATE' }, people), /已发布/)
 assert.equal(JSON.stringify(schedule), before)
+const custom = structuredClone(schedule)
+custom.rules = {
+  replacementEnabled: true, replacementPersonId: '0', replacementLabel: '替岗', replacementSlots: [slots[0]],
+  slots: slots.map((code, index) => ({ code, dayOffset: index > 4 ? 1 : 0, start: index === 4 ? '20:00' : '09:00', end: null })),
+  powerBankEveningSlot: slots[4], powerBankMorningStart: '06:00', powerBankMorningEnd: '08:30',
+}
+const customRows = scheduleImageRows(custom, people)
+assert.equal(customRows[0].cells[1][0].text, '黄勇斌 监管 替岗')
+assert.match(customRows[6].cells[0][0].text, /06:00–08:30/)
+assert.match(customRows[7].cells[0][0].text, /20:00–结束/)
+const emptyManual = scheduleImageRows({ ...custom, manualMode: true, assignments: [], powerBankDuties: [], requirements: slots.map(slotCode => ({ slotCode })) }, people)
+assert.equal(emptyManual.length, 7, 'Manual exports retain unfilled time slots')
+const noMarkers = scheduleImageRows({ ...schedule, manualMode: true, bombReplacements: {} }, people)
+assert.equal(noMarkers[0].cells[1].some(c => c.tone === 'replacement'), false)
 console.log('Schedule PNG row checks passed')

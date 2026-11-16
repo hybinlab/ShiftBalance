@@ -37,4 +37,12 @@ const otherGroup = assignments.map((item) => item.positionCode === 'TERMINAL'
   ? { ...item, groupCode: 'B' } : item)
 assert.deepEqual(choose(saved, otherGroup), {})
 assert.deepEqual(assignments, before, 'Replacement markers must never swap formal job assignments')
+const custom = assignments.filter(a => a.slotCode === morning).map(a => ({ ...a, slotCode: 'CUSTOM' }))
+const policy = { replacementEnabled: true, replacementPersonId: '1', replacementSlots: ['CUSTOM'] }
+const renamed = people.map(p => p.id === '1' ? { ...p, name: '新姓名' } : p)
+assert.deepEqual(Object.fromEntries(chooseBombReplacements(custom, renamed, {}, policy)), { CUSTOM: '2' })
+assert.equal(chooseBombReplacements(custom, renamed, {}, { ...policy, replacementEnabled: false }).size, 0)
+assert.deepEqual(Object.fromEntries(chooseBombReplacements(withoutLiao, people, { [morning]: '5' }, undefined, true)), { [morning]: '5' })
+assert.equal(chooseBombReplacements(assignments, people, {}, undefined, true).size, 0, 'Manual mode must not automatically choose replacements')
+assert.equal(chooseBombReplacements(moved, people, { [morning]: '4' }, undefined, true).size, 0, 'Drop stale manual markers without choosing a substitute')
 console.log('Bomb replacement selection checks passed')

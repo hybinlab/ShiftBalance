@@ -37,7 +37,7 @@ docker compose down
 
 如果通过 HTTPS 反向代理对外提供服务，请将 `SHIFTBALANCE_SESSION_COOKIE_SECURE` 设为 `true`。如果通过浏览器直接跨域调用后端，再将 `SHIFTBALANCE_CORS_ALLOWED_ORIGINS` 配置为可信前端的完整来源；默认部署由 Nginx 同源转发，不需要额外开放 CORS 来源。
 
-两天排班生成会依次运行多个岗位公平性优化阶段，耗时可能超过常见反向代理的 60 秒默认超时。项目内 Nginx 已为 `/api/` 设置 300 秒代理超时；如果前面还配置了宿主机 Nginx、负载均衡器或 CDN，也需要将其读取/空闲超时设为至少 300 秒，否则仍会收到 `504 Gateway Time-out`。修改后重建前端容器：
+工作周期排班生成会依次运行多个岗位公平性优化阶段，耗时可能超过常见反向代理的 60 秒默认超时。项目内 Nginx 已为 `/api/` 设置 300 秒代理超时；如果前面还配置了宿主机 Nginx、负载均衡器或 CDN，也需要将其读取/空闲超时设为至少 300 秒，否则仍会收到 `504 Gateway Time-out`。修改后重建前端容器：
 
 ```sh
 docker compose up -d --build frontend
@@ -67,6 +67,7 @@ DB_FILES=(
   migration_v12_overnight_parallel_assignment.sql
   migration_v13_meal_three_people.sql
   migration_v14_power_bank_same_group.sql
+  migration_v15_configurable_rules.sql
 )
 for file in "${DB_FILES[@]}"; do
   psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d shiftbalance -v ON_ERROR_STOP=1 -f "src/main/resources/db/$file" || exit 1
@@ -92,6 +93,42 @@ docker compose up -d --build
 ```
 
 v14 仅解除推电宝同一天同组只能承担一次任务的约束，保留每个方向一人的限制。两组按确认的名单逐次轮换；已有排班需要重新生成、检查后发布。
+
+可视化统一规则需要 v15。已升级到 v14 的数据库，在更新应用前由表所有者执行：
+
+```sh
+psql -h 192.168.31.5 -p 5432 -U postgres -d shiftbalance -v ON_ERROR_STOP=1 -f backend/src/main/resources/db/migration_v15_configurable_rules.sql
+docker compose up -d --build
+```
+
+v15 仅增加业务规则配置字段，不改已有人员、排班和需求人数。尚未保存统一配置时沿用原有默认行为；应用启动不会自动执行此迁移。
+
+## 可视化排班规则
+
+进入“排班规则 → 标准规则模板”，可统一调整：
+
+- 轮班锚点、参考组，以及周期内每天的早下组、休息日和推电宝负责组。
+- 当天、次日的时段起止时间及顺序；剩余人员分配到候机楼、防爆，或不自动分配。
+- 各时段岗位的最低/最高人数、组别、固定人员。最低人数为 0 允许空缺，最高人数留空不设上限。
+- 回流和监管是否允许重复、是否必须指定监管、固定人员是否只上指定时段，以及打饭去重和公平性优化开关。
+- 候机楼替岗标记的开关、目标人员、文字和时段；推电宝的开关、任务时间和各组轮换名单顺序。
+
+修改后点击“保存全部标准规则”。周期生成覆盖所选日期所在的连续工作日；按已发布推电宝记录衔接名单顺序，停用或不在该组的人员会跳过。规则按人员 ID 保存，修改姓名不影响轮换。
+
+新生成的排班保存独立规则快照；调整、发布和导出时使用该版本的规则。修改标准规则后，需要重新生成对应日期才会应用新配置。日期例外独立覆盖当天的岗位人数、组别和固定人员，其他规则沿用标准配置；更改时段后应检查既有日期例外。
+
+目前仍采用两个启用组别；岗位资格和同一时段正式岗位不能兼任属于基本校验。过夜、推电宝继续作为独立附加任务，不占正式岗位名额。人员减少时可降低需求人数、调整组别或放宽重复限制；系统不会自行忽略已配置的最低人数，配置仍无解时会明确报错。
+
+规则回归检查：
+
+```sh
+sh backend/scripts/check-configurable-rules.sh
+node frontend/scripts/check-schedule-rotation.mjs
+node frontend/scripts/check-bomb-replacements.mjs
+node frontend/scripts/check-schedule-image.mjs
+```
+
+可选数据库回归：`sh backend/scripts/check-configurable-rules.sh --database`。读取本地数据库连接配置，仅创建连接内的临时表并最终回滚，验证保存、生成、调整、发布和历史快照，不修改现有业务表。
 
 ## 配置
 
@@ -119,3 +156,5 @@ npm run dev
 ```
 
 Vite 默认把 `/api` 转发到 `http://localhost:8080`。完整 API 字段和示例见 [backend/API.md](backend/API.md)。
+
+自动排班因缺人、规则冲突或求解超时无法完成时，会保存为**手工排班**草稿，并显示失败原因。管理员可以自由选人、增减和拖拽，不受人数、分组、资格、固定人员或重复限制；候机楼和打饭不再自动补人。保存后可直接发布、计入统计和导出 PNG，不做排班规则校验。手工模式随历史版本保存；正常自动生成的版本仍执行规则校验。数据库或网络故障需先恢复连接。

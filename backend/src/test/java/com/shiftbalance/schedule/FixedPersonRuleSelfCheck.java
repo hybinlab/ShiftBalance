@@ -54,16 +54,10 @@ public final class FixedPersonRuleSelfCheck {
         assert result.assignments().stream().allMatch(item -> item.people().size() == 3)
                 : "Every meal assignment must contain exactly three people";
 
-        for (StaffingRequirement invalid : List.of(
-                new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "A", 2, 2, null),
-                new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "A", 3, 4, null),
-                new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "A", 3, null, null))) {
-            try {
-                new ScheduleSolver().generate(new GenerateRequest(request.scheduleDate(), request.staff(), List.of(invalid)));
-                throw new AssertionError("Meal counts other than exactly three should be rejected");
-            } catch (ResponseStatusException exception) {
-                assert exception.getStatusCode().value() == 400;
-            }
+        for (int count : List.of(1, 2, 3)) {
+            var configurable = new StaffingRequirement("DAY_0900_1130", "MEAL", "打饭", "A", count, count, null);
+            var configured = new ScheduleSolver().generate(new GenerateRequest(request.scheduleDate(), request.staff(), List.of(configurable)));
+            assert configured.assignments().getFirst().people().size() == count : "Configured meal counts must be honored";
         }
 
         checkBreakfastStaffing();

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shiftbalance.schedule.ScheduleDtos.Assignment;
+import com.shiftbalance.schedule.ScheduleDtos.RotationSnapshot;
 import com.shiftbalance.schedule.ScheduleDtos.EditScheduleRequest;
 import com.shiftbalance.schedule.ScheduleDtos.GenerateRequest;
 import com.shiftbalance.schedule.ScheduleDtos.GenerateResponse;
@@ -49,11 +50,7 @@ public class SchedulePersistenceService {
 
     @Transactional
     public GenerateResponse saveCandidate(GenerateRequest request, GenerateResponse result) {
-        if (!result.status().equals("OPTIMAL") && !result.status().equals("FEASIBLE")) {
-            return result;
-        }
-        List<PowerBankRotation.PlannedDuty> duties = powerBankPlans(List.of(request)).getFirst();
-        return saveCandidate(request, result, duties);
+        return saveCandidates(List.of(request), List.of(result)).getFirst();
     }
 
     private GenerateResponse saveCandidate(
@@ -75,7 +72,7 @@ public class SchedulePersistenceService {
         }
 
         jdbc.update("UPDATE schedule SET configuration_snapshot = ?::jsonb WHERE id = ?",
-                configurationSnapshot(request), candidate.id());
+                configurationSnapshot(request, result), candidate.id());
         jdbc.update("DELETE FROM schedule_power_bank_duty WHERE schedule_id = ?", candidate.id());
 
         for (Assignment assignment : result.assignments()) {
@@ -112,20 +109,33 @@ public class SchedulePersistenceService {
 
     @Transactional
     public List<GenerateResponse> saveCandidates(List<GenerateRequest> requests, List<GenerateResponse> results) {
-        if (requests.size() != results.size()
-                || results.stream().anyMatch(result -> !result.status().equals("OPTIMAL") && !result.status().equals("FEASIBLE"))) {
-            throw new IllegalArgumentException("只可批量保存完整且可行的工作周期候选排班。");
+        if (requests.size() != results.size()) throw new IllegalArgumentException("请求与生成结果数量不一致。");
+        List<List<PowerBankRotation.PlannedDuty>> dutyPlans;
+        String dutyFailure = null;
+        try {
+            dutyPlans = powerBankPlans(requests);
+        } catch (ResponseStatusException exception) {
+            if (exception.getStatusCode().value() != 400 && exception.getStatusCode().value() != 422) throw exception;
+            dutyFailure = exception.getReason();
+            dutyPlans = requests.stream().map(r -> List.<PowerBankRotation.PlannedDuty>of()).toList();
         }
-        List<List<PowerBankRotation.PlannedDuty>> dutyPlans = powerBankPlans(requests);
         List<GenerateResponse> saved = new ArrayList<>(results.size());
         for (int i = 0; i < results.size(); i++) {
-            saved.add(saveCandidate(requests.get(i), results.get(i), dutyPlans.get(i)));
+            GenerateResponse result = results.get(i);
+            if (dutyFailure != null || !Set.of("OPTIMAL", "FEASIBLE").contains(result.status())) {
+                List<String> reasons = new ArrayList<>(result.messages());
+                if (dutyFailure != null) reasons.add(dutyFailure);
+                if (reasons.isEmpty()) reasons.add("自动排班未得到可行结果（" + result.status() + "）");
+                result = new GenerateResponse(result.scheduleDate(), "MANUAL", result.assignments(), reasons, result.fairness());
+            }
+            saved.add(saveCandidate(requests.get(i), result, dutyPlans.get(i)));
         }
         return List.copyOf(saved);
     }
 
     public ScheduleResponse getSchedule(long scheduleId) {
         ScheduleHeader header = scheduleHeader(scheduleId, false);
+        SchedulingRules policy = snapshotRules(header.configurationSnapshot());
         Map<AssignmentKey, RequirementRule> rules = requirementRules(header.configurationSnapshot());
         Map<AssignmentKey, List<PersonSummary>> peopleByAssignment = new LinkedHashMap<>();
         Map<AssignmentKey, AssignmentDetails> details = new HashMap<>();
@@ -154,7 +164,8 @@ public class SchedulePersistenceService {
         List<Assignment> assignments = peopleByAssignment.entrySet().stream()
                 .map(entry -> {
                     AssignmentDetails item = details.get(entry.getKey());
-                    return new Assignment(entry.getKey().slotCode(), item.slotLabel(), item.slotSequence(),
+                    return new Assignment(entry.getKey().slotCode(), policy.timeSlot(entry.getKey().slotCode()) == null ? item.slotLabel() : policy.timeSlot(entry.getKey().slotCode()).label(),
+                            policy.timeSlot(entry.getKey().slotCode()) == null ? item.slotSequence() : policy.timeSlot(entry.getKey().slotCode()).sequence(),
                             entry.getKey().positionCode(), item.positionName(), entry.getKey().groupCode(),
                             rules.getOrDefault(entry.getKey(), new RequirementRule(0, null, null)).fixedPersonId(),
                             List.copyOf(entry.getValue()));
@@ -169,10 +180,12 @@ public class SchedulePersistenceService {
                         ORDER BY CASE duty.direction WHEN 'FROM_WAREHOUSE' THEN 1 ELSE 2 END
                         """,
                 (rs, rowNum) -> toPowerBankDuty(rs.getString("direction"), rs.getString("group_code"),
-                        Long.toString(rs.getLong("person_id")), rs.getString("person_name")), scheduleId);
+                        Long.toString(rs.getLong("person_id")), rs.getString("person_name")), scheduleId).stream()
+                .map(d -> new PowerBankDuty(d.direction(), d.direction().equals("TO_WAREHOUSE") ? policy.powerBankEveningSlot() : d.slotCode(), d.groupCode(), d.personId(), d.personName())).toList();
         return new ScheduleResponse(scheduleId, header.scheduleDate(), header.status(), header.version(),
                 assignments, powerBankDuties, snapshotRequirements(header.configurationSnapshot()),
-                snapshotBombReplacements(header.configurationSnapshot()));
+                snapshotBombReplacements(header.configurationSnapshot()), snapshotRules(header.configurationSnapshot()), snapshotRotation(header.configurationSnapshot()),
+                isManual(header.configurationSnapshot()), manualReason(header.configurationSnapshot()));
     }
 
     public List<ScheduleCalendarEntry> calendar(LocalDate startDate, LocalDate endDate) {
@@ -282,13 +295,11 @@ public class SchedulePersistenceService {
 
     private List<List<PowerBankRotation.PlannedDuty>> powerBankPlans(List<GenerateRequest> requests) {
         if (requests.isEmpty()) return List.of();
-        if (requests.stream().allMatch(request -> PowerBankRotation.lateGroupFor(request) == null)) {
-            return requests.stream().map(request -> List.<PowerBankRotation.PlannedDuty>of()).toList();
-        }
+        if (requests.stream().noneMatch(r -> r.rules().powerBankEnabled())) return requests.stream().map(r -> List.<PowerBankRotation.PlannedDuty>of()).toList();
         LocalDate firstDate = requests.stream().map(GenerateRequest::scheduleDate).min(LocalDate::compareTo).orElseThrow();
         Map<String, String> lastAssignedNamesByGroup = jdbc.query("""
                         SELECT DISTINCT ON (staff_group.code) staff_group.code AS group_code,
-                               person.name AS person_name
+                               person.id::text AS person_id
                         FROM schedule_power_bank_duty duty
                         JOIN schedule ON schedule.id = duty.schedule_id
                         JOIN staff_group ON staff_group.id = duty.group_id_snapshot
@@ -301,13 +312,21 @@ public class SchedulePersistenceService {
                         ORDER BY staff_group.code, schedule.schedule_date DESC, schedule.version DESC,
                                  CASE duty.direction WHEN 'TO_WAREHOUSE' THEN 1 ELSE 0 END DESC
                         """,
-                (rs, rowNum) -> Map.entry(rs.getString("group_code"), rs.getString("person_name")), firstDate)
+                (rs, rowNum) -> Map.entry(rs.getString("group_code"), rs.getString("person_id")), firstDate)
                 .stream().collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-        return PowerBankRotation.plan(requests, lastAssignedNamesByGroup, templateService.template().anchorWorkDate());
+        var rotation = requests.getFirst().rotation();
+        if (rotation == null) {
+            var template = templateService.template();
+            rotation = new RotationSnapshot(template.anchorWorkDate(), template.firstEarlyDownGroup());
+        }
+        String other = jdbc.query("SELECT code FROM staff_group WHERE enabled AND code <> ? ORDER BY code",
+                (rs, row) -> rs.getString(1), rotation.firstEarlyDownGroup()).stream().findFirst()
+                .orElseThrow(() -> badRequest("推电宝需要两个启用组别。"));
+        return PowerBankRotation.plan(requests, lastAssignedNamesByGroup, rotation.anchorWorkDate(), rotation.firstEarlyDownGroup(), other);
     }
 
     private static PowerBankDuty toPowerBankDuty(PowerBankRotation.PlannedDuty duty) {
-        return toPowerBankDuty(duty.direction(), duty.groupCode(), duty.personId(), duty.personName());
+        return new PowerBankDuty(duty.direction(), duty.slotCode(), duty.groupCode(), duty.personId(), duty.personName());
     }
 
     private static PowerBankDuty toPowerBankDuty(
@@ -326,6 +345,10 @@ public class SchedulePersistenceService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "只有待发布排班可以发布。");
         }
 
+        ScheduleResponse candidate = getSchedule(scheduleId);
+        if (!candidate.manualMode()) validateEdits(header.scheduleDate(), header.configurationSnapshot(), candidate.assignments().stream().map(a ->
+                new ScheduleEditAssignment(a.slotCode(), a.positionCode(), a.groupCode(), a.people().stream().map(PersonSummary::id).toList(),
+                        a.people().stream().filter(PersonSummary::terminalSupervisor).map(PersonSummary::id).findFirst().orElse(null))).toList());
         jdbc.update("""
                 UPDATE schedule SET status = 'CANCELLED'
                 WHERE schedule_date = ? AND status = 'PUBLISHED' AND id <> ?
@@ -352,15 +375,18 @@ public class SchedulePersistenceService {
         if (!header.status().equals("CANDIDATE")) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "已发布排班不能直接编辑；请生成待发布新版本后再调整。");
         }
-        validateEdits(header.scheduleDate(), header.configurationSnapshot(), request.assignments());
+        boolean manual = isManual(header.configurationSnapshot());
+        if (manual) validateManualAssignments(request.assignments());
+        else validateEdits(header.scheduleDate(), header.configurationSnapshot(), request.assignments());
         Map<String, String> requestedReplacements = request.bombReplacements() == null
                 ? snapshotBombReplacements(header.configurationSnapshot()) : request.bombReplacements();
-        Set<String> originalIds = requestedReplacements.isEmpty() ? Set.of() : new HashSet<>(jdbc.query(
+        SchedulingRules policy = snapshotRules(header.configurationSnapshot());
+        Set<String> originalIds = policy.replacementPersonId() != null ? Set.of(policy.replacementPersonId()) : requestedReplacements.isEmpty() ? Set.of() : new HashSet<>(jdbc.query(
                 "SELECT id::text FROM person WHERE name = ?", (rs, rowNum) -> rs.getString(1), "廖家史"));
-        Map<String, String> replacements = checkedBombReplacements(
-                requestedReplacements, request.assignments(), originalIds, request.bombReplacements() != null);
+        Map<String, String> replacements = manual ? manualReplacements(requestedReplacements, request.assignments()) : checkedBombReplacements(
+                requestedReplacements, request.assignments(), originalIds, request.bombReplacements() != null, policy);
         if (request.powerBankDuties() != null) {
-            updatePowerBankDuties(scheduleId, header.scheduleDate(), request.powerBankDuties());
+            updatePowerBankDuties(scheduleId, header.scheduleDate(), request.powerBankDuties(), manual);
         }
 
         jdbc.update("DELETE FROM schedule_assignment WHERE schedule_id = ?", scheduleId);
@@ -380,12 +406,23 @@ public class SchedulePersistenceService {
             }
         }
         try {
-            // ponytail: these visual markers live in the existing version snapshot and are copied on restore.
-            jdbc.update("""
-                    UPDATE schedule
-                    SET configuration_snapshot = jsonb_set(configuration_snapshot, '{bombReplacements}', ?::jsonb)
-                    WHERE id = ?
-                    """, objectMapper.writeValueAsString(replacements), scheduleId);
+            // ponytail: manual state and editable cells share the version snapshot, including history restores.
+            Map<String, Object> changes = new LinkedHashMap<>();
+            changes.put("bombReplacements", replacements);
+            if (manual) {
+                List<StaffingRequirement> requirements = new ArrayList<>(snapshotRequirements(header.configurationSnapshot()));
+                for (ScheduleEditAssignment assignment : request.assignments()) {
+                    if (requirements.stream().noneMatch(r -> r.slotCode().equals(assignment.slotCode())
+                            && r.positionCode().equals(assignment.positionCode()) && r.groupCode().equals(assignment.groupCode()))) {
+                        String name = jdbc.queryForObject("SELECT name FROM job_position WHERE code = ?", String.class, assignment.positionCode());
+                        requirements.add(new StaffingRequirement(assignment.slotCode(), assignment.positionCode(), name,
+                                assignment.groupCode(), 0, null, null));
+                    }
+                }
+                changes.put("requirements", requirements);
+            }
+            jdbc.update("UPDATE schedule SET configuration_snapshot = configuration_snapshot || ?::jsonb WHERE id = ?",
+                    objectMapper.writeValueAsString(changes), scheduleId);
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("无法保存换廖人员。", exception);
         }
@@ -395,11 +432,16 @@ public class SchedulePersistenceService {
     static Map<String, String> checkedBombReplacements(
             Map<String, String> replacements, List<ScheduleEditAssignment> assignments,
             Set<String> originalIds, boolean rejectInvalid) {
+        return checkedBombReplacements(replacements, assignments, originalIds, rejectInvalid, SchedulingRules.defaults());
+    }
+
+    static Map<String, String> checkedBombReplacements(Map<String, String> replacements,
+            List<ScheduleEditAssignment> assignments, Set<String> originalIds, boolean rejectInvalid, SchedulingRules policy) {
         Map<String, String> valid = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : replacements.entrySet()) {
             String slot = entry.getKey();
             String personId = entry.getValue();
-            boolean allowed = ("DAY_0900_1130".equals(slot) || "DAY_1430_1730".equals(slot))
+            boolean allowed = (policy.replacementEnabled() && policy.replacementSlots().contains(slot))
                     && personId != null && !personId.isBlank()
                     && assignments.stream().anyMatch(terminal -> terminal.slotCode().equals(slot)
                         && terminal.positionCode().equals("TERMINAL") && terminal.personIds().contains(personId)
@@ -407,7 +449,7 @@ public class SchedulePersistenceService {
                             && bomb.positionCode().equals("BOMB") && bomb.groupCode().equals(terminal.groupCode())
                             && bomb.personIds().stream().anyMatch(originalIds::contains)));
             if (allowed) valid.put(slot, personId);
-            else if (rejectInvalid) throw badRequest("换廖人选必须属于指定时段的候机楼名单，且同组防爆名单中有廖家史：" + slot);
+            else if (rejectInvalid) throw badRequest("替岗人选必须属于指定时段的候机楼名单，且同组防爆名单中有被替岗人员：" + slot);
         }
         return valid;
     }
@@ -423,7 +465,22 @@ public class SchedulePersistenceService {
         }
     }
 
-    private void updatePowerBankDuties(long scheduleId, LocalDate scheduleDate, List<PowerBankDutyEdit> edits) {
+    private void updatePowerBankDuties(long scheduleId, LocalDate scheduleDate, List<PowerBankDutyEdit> edits, boolean manual) {
+        if (manual) {
+            Set<String> directions = new HashSet<>();
+            for (PowerBankDutyEdit edit : edits) {
+                if (!Set.of("FROM_WAREHOUSE", "TO_WAREHOUSE").contains(edit.direction()) || !directions.add(edit.direction()))
+                    throw badRequest("推电宝方向无效或重复。");
+                referenceId("staff_group", edit.groupCode());
+                requirePerson(edit.personId());
+            }
+            jdbc.update("DELETE FROM schedule_power_bank_duty WHERE schedule_id = ?", scheduleId);
+            for (PowerBankDutyEdit edit : edits) jdbc.update("""
+                    INSERT INTO schedule_power_bank_duty(schedule_id, group_id_snapshot, person_id, direction)
+                    VALUES (?, (SELECT id FROM staff_group WHERE code = ?), ?, ?)
+                    """, scheduleId, edit.groupCode(), parsePersonId(edit.personId()), edit.direction());
+            return;
+        }
         List<ExistingPowerBankDuty> existing = jdbc.query("""
                         SELECT duty.direction, staff_group.code AS group_code
                         FROM schedule_power_bank_duty duty
@@ -473,8 +530,51 @@ public class SchedulePersistenceService {
         return names.isEmpty() ? null : names.getFirst();
     }
 
+    private void validateManualAssignments(List<ScheduleEditAssignment> assignments) {
+        Set<String> rows = new HashSet<>();
+        for (ScheduleEditAssignment assignment : assignments) {
+            if (!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM time_slot WHERE code = ?)",
+                    Boolean.class, assignment.slotCode()))) throw badRequest("时间段不存在：" + assignment.slotCode());
+            referenceId("job_position", assignment.positionCode());
+            referenceId("staff_group", assignment.groupCode());
+            for (String id : assignment.personIds()) {
+                requirePerson(id);
+                if (!rows.add(assignment.slotCode() + ":" + assignment.positionCode() + ":" + parsePersonId(id)))
+                    throw badRequest("同一岗位名单中不能重复添加同一个人。");
+            }
+            if (assignment.terminalSupervisorId() != null && (!assignment.positionCode().equals("TERMINAL")
+                    || !assignment.personIds().contains(assignment.terminalSupervisorId())))
+                throw badRequest("监管标记必须引用当前候机楼名单中的人员。");
+        }
+    }
+
+    private void requirePerson(String id) {
+        if (!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM person WHERE id = ?)",
+                Boolean.class, parsePersonId(id)))) throw badRequest("人员不存在：" + id);
+    }
+
+    private static Map<String, String> manualReplacements(Map<String, String> requested, List<ScheduleEditAssignment> assignments) {
+        Map<String, String> result = new LinkedHashMap<>();
+        requested.forEach((slot, id) -> {
+            if (assignments.stream().anyMatch(a -> a.slotCode().equals(slot) && a.positionCode().equals("TERMINAL")
+                    && a.personIds().contains(id))) result.put(slot, id);
+        });
+        return result;
+    }
+
+    private boolean isManual(String snapshot) {
+        return manualReason(snapshot) != null;
+    }
+
+    private String manualReason(String snapshot) {
+        try {
+            return objectMapper.readTree(snapshot).path("manualReason").asText(null);
+        } catch (JsonProcessingException exception) { throw new IllegalStateException("无法读取手工排班状态。", exception); }
+    }
+
     private void validateEdits(LocalDate scheduleDate, String configurationSnapshot,
                                List<ScheduleEditAssignment> assignments) {
+        SchedulingRules policy = snapshotRules(configurationSnapshot);
         Map<AssignmentKey, RequirementRule> rules = requirementRules(configurationSnapshot);
         Set<AssignmentKey> seenAssignments = new HashSet<>();
         Set<String> seenStaffingPeopleBySlot = new HashSet<>();
@@ -486,7 +586,7 @@ public class SchedulePersistenceService {
         Set<Long> flowPeople = new HashSet<>();
 
         for (ScheduleEditAssignment assignment : assignments) {
-            if (TimeSlotCatalog.find(assignment.slotCode()) == null) {
+            if (policy.timeSlot(assignment.slotCode()) == null) {
                 throw badRequest("未知时段编码：" + assignment.slotCode());
             }
             AssignmentKey key = new AssignmentKey(assignment.slotCode(), assignment.positionCode(), assignment.groupCode());
@@ -511,7 +611,7 @@ public class SchedulePersistenceService {
                     throw badRequest("同一人员不能在同一时段重复安排：" + personIdText);
                 }
                 boolean fixedPerson = rule != null && personIdText.equals(rule.fixedPersonId());
-                boolean fixedElsewhere = rules.entrySet().stream()
+                boolean fixedElsewhere = policy.fixedExclusive() && rules.entrySet().stream()
                         .anyMatch(entry -> personIdText.equals(entry.getValue().fixedPersonId())
                                 && !(entry.getKey().slotCode().equals(key.slotCode())
                                 && (entry.getKey().positionCode().equals("OVERNIGHT")
@@ -523,7 +623,7 @@ public class SchedulePersistenceService {
                         assignment.positionCode(), fixedPerson) == null) {
                     throw badRequest("人员不存在、未启用、组别不符或没有该岗位资格：" + personIdText);
                 }
-                if (assignment.positionCode().equals("FLOW") && !flowPeople.add(personId)) {
+                if (policy.flowNoRepeat() && assignment.positionCode().equals("FLOW") && !flowPeople.add(personId)) {
                     throw badRequest("回流人员当天不能重复安排：" + personIdText);
                 }
                 assignedPeople.computeIfAbsent(key, ignored -> new HashSet<>()).add(personId);
@@ -531,11 +631,12 @@ public class SchedulePersistenceService {
 
             String supervisorId = assignment.terminalSupervisorId();
             if (assignment.positionCode().equals("TERMINAL")) {
-                if (!assignment.personIds().isEmpty() && (supervisorId == null || !localPeople.contains(supervisorId))) {
+                if (policy.supervisorRequired() && !assignment.personIds().isEmpty() && (supervisorId == null || !localPeople.contains(supervisorId))) {
                     throw badRequest("每个有人员的候机楼时段必须从已安排人员中指定一名监管人员。");
                 }
                 if (supervisorId != null) {
-                    if (!supervisorIds.add(supervisorId)) {
+                    if (!localPeople.contains(supervisorId)) throw badRequest("监管人员必须在该时段候机楼名单中。");
+                    if (policy.supervisorNoRepeat() && !supervisorIds.add(supervisorId)) {
                         throw badRequest("候机楼监管人员当天不能重复安排：" + supervisorId);
                     }
                     supervisorsBySlot.merge(assignment.slotCode(), 1, Integer::sum);
@@ -557,10 +658,7 @@ public class SchedulePersistenceService {
             }
         }
         for (AssignmentKey terminal : rules.keySet().stream()
-                .filter(key -> key.positionCode().equals("TERMINAL"))
-                .filter(key -> rules.keySet().stream().anyMatch(other -> other.slotCode().equals(key.slotCode())
-                        && other.groupCode().equals(key.groupCode())
-                        && (other.positionCode().equals("BOMB") || other.positionCode().equals("MEZZANINE"))))
+                .filter(key -> policy.remainder(key.slotCode()).equals(key.positionCode()))
                 .toList()) {
             Set<Long> expected = activePeopleInGroup(scheduleDate, terminal.groupCode());
             Set<Long> scheduled = new HashSet<>();
@@ -571,8 +669,8 @@ public class SchedulePersistenceService {
             rules.forEach((key, rule) -> {
                 if (rule.fixedPersonId() != null
                         && !(key.positionCode().equals("OVERNIGHT") && key.slotCode().equals(terminal.slotCode()))
-                        && (!key.groupCode().equals(terminal.groupCode())
-                        || !key.slotCode().equals(terminal.slotCode()))) {
+                        && (policy.fixedExclusive() || key.slotCode().equals(terminal.slotCode()))
+                        && (!key.groupCode().equals(terminal.groupCode()) || !key.slotCode().equals(terminal.slotCode()))) {
                     expected.remove(parsePersonId(rule.fixedPersonId()));
                 }
             });
@@ -679,11 +777,42 @@ public class SchedulePersistenceService {
         return ids.getFirst();
     }
 
-    private String configurationSnapshot(GenerateRequest request) {
+    private RotationSnapshot snapshotRotation(String snapshot) {
         try {
-            return objectMapper.writeValueAsString(Map.of(
-                    "staff", request.staff(),
-                    "requirements", request.requirements()));
+            JsonNode node = objectMapper.readTree(snapshot).path("rotation");
+            return node.isObject() ? objectMapper.treeToValue(node, RotationSnapshot.class) : null;
+        } catch (JsonProcessingException e) { throw new IllegalStateException("无法读取轮班快照", e); }
+    }
+
+    private SchedulingRules snapshotRules(String snapshot) {
+        try {
+            JsonNode node = objectMapper.readTree(snapshot).path("rules");
+            return node.isObject() ? objectMapper.treeToValue(node, SchedulingRules.class) : SchedulingRules.defaults();
+        } catch (JsonProcessingException e) { throw new IllegalStateException("无法读取业务规则快照", e); }
+    }
+
+    private String configurationSnapshot(GenerateRequest request, GenerateResponse result) {
+        try {
+            Map<String, Object> snapshot = new LinkedHashMap<>();
+            snapshot.put("staff", request.staff());
+            List<StaffingRequirement> requirements = new ArrayList<>(request.requirements());
+            if (result.status().equals("MANUAL")) {
+                snapshot.put("manualReason", String.join("；", result.messages()));
+                // ponytail: reuse the existing table/editor; empty cells become optional manual assignments.
+                Map<String, String> positions = Map.of("BOMB", "防爆", "TERMINAL", "候机楼", "MEZZANINE", "夹层", "FLOW", "回流/拉包", "MEAL", "打饭", "OVERNIGHT", "过夜");
+                for (String slot : request.requirements().stream().map(StaffingRequirement::slotCode).distinct().toList()) {
+                    String group = request.requirements().stream().filter(r -> r.slotCode().equals(slot)).findFirst().orElseThrow().groupCode();
+                    for (var position : positions.entrySet()) {
+                        if (position.getKey().equals("OVERNIGHT") && !slot.equals(request.rules().powerBankEveningSlot())) continue;
+                        if (requirements.stream().noneMatch(r -> r.slotCode().equals(slot) && r.positionCode().equals(position.getKey())))
+                            requirements.add(new StaffingRequirement(slot, position.getKey(), position.getValue(), group, 0, null, null));
+                    }
+                }
+            }
+            snapshot.put("requirements", requirements);
+            snapshot.put("rules", request.rules());
+            if (request.rotation() != null) snapshot.put("rotation", request.rotation());
+            return objectMapper.writeValueAsString(snapshot);
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("无法保存排班配置快照。", exception);
         }

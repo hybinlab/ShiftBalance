@@ -1,4 +1,5 @@
-export type RotationAnchor = { anchorWorkDate: string; firstEarlyDownGroup: string }
+import type { SchedulingRules } from './schedulingRules'
+export type RotationAnchor = { anchorWorkDate: string; firstEarlyDownGroup: string; rules?: SchedulingRules }
 export type RotationGroup = { code: string }
 export type RotationDay = { isWorkday: boolean; early: string | null; late: string | null }
 
@@ -18,22 +19,40 @@ export function groupForDate(
   groups: readonly RotationGroup[],
 ): RotationDay | null {
   if (!template || groups.length !== 2) return null
-  const offset = dayDifference(template.anchorWorkDate, date)
-  const cycleDay = mod(offset, 4)
-  if (cycleDay >= 2) return { isWorkday: false, early: null, late: null }
-  const workdayIndex = Math.floor(offset / 4) * 2 + cycleDay
-  const rotationIndex = mod(workdayIndex, 4)
+  const day = cycleForDate(date, template)
+  if (day === 'REST') return { isWorkday: false, early: null, late: null }
   const other = groups.find((group) => group.code !== template.firstEarlyDownGroup)?.code
   if (!other) return null
-  const early = rotationIndex === 0 || rotationIndex === 3 ? template.firstEarlyDownGroup : other
+  const early = day === 'FIRST' ? template.firstEarlyDownGroup : other
   return { isWorkday: true, early, late: early === template.firstEarlyDownGroup ? other : template.firstEarlyDownGroup }
 }
 
-export function workPeriodStartDate(date: string, template: RotationAnchor | null) {
-  if (!template) return null
-  const dayInCycle = mod(dayDifference(template.anchorWorkDate, date), 4)
-  if (dayInCycle >= 2) return null
+function cycleForDate(date: string, template: RotationAnchor) {
+  const days = template.rules?.cycle.map(d => d.earlyGroup) ?? ['FIRST', 'OTHER', 'REST', 'REST', 'OTHER', 'FIRST', 'REST', 'REST']
+  return days[mod(dayDifference(template.anchorWorkDate, date), days.length)]
+}
+
+function shiftDay(date: string, offset: number) {
   const shifted = new Date(`${date}T00:00:00Z`)
-  shifted.setUTCDate(shifted.getUTCDate() - dayInCycle)
+  shifted.setUTCDate(shifted.getUTCDate() + offset)
   return shifted.toISOString().slice(0, 10)
+}
+
+export function workPeriodStartDate(date: string, template: RotationAnchor | null) {
+  if (!template || cycleForDate(date, template) === 'REST') return null
+  let start = date
+  for (let i = 0; i < 60 && cycleForDate(shiftDay(start, -1), template) !== 'REST'; i++) start = shiftDay(start, -1)
+  return start
+}
+
+export function workPeriodDates(date: string, template: RotationAnchor | null) {
+  const start = workPeriodStartDate(date, template)
+  if (!start || !template) return []
+  const dates: string[] = []
+  for (let i = 0; i < 60; i++) {
+    const day = shiftDay(start, i)
+    if (cycleForDate(day, template) === 'REST') break
+    dates.push(day)
+  }
+  return dates
 }

@@ -48,11 +48,11 @@ public class ScheduleSolver {
 
         for (int index = 0; index < request.requirements().size(); index++) {
             StaffingRequirement requirement = request.requirements().get(index);
-            List<StaffMember> eligible = eligibleStaff(request.staff(), requirement, request.requirements());
-            boolean derivedTerminal = isDerivedTerminal(request.requirements(), index);
-            if (!derivedTerminal && eligible.size() < requirement.minCount()) {
+            List<StaffMember> eligible = eligibleStaff(request.staff(), requirement, request.requirements(), request.rules().fixedExclusive());
+
+            if (eligible.size() < requirement.minCount()) {
                 preflightIssues.add("%s / %s：最低需要 %d 人，符合分组和资格的启用人员只有 %d 人。"
-                        .formatted(TimeSlotCatalog.find(requirement.slotCode()).label(), requirement.positionName(),
+                        .formatted(request.rules().timeSlot(requirement.slotCode()).label(), requirement.positionName(),
                                 requirement.minCount(), eligible.size()));
                 continue;
             }
@@ -71,12 +71,10 @@ public class ScheduleSolver {
             if (requirement.fixedPersonId() != null) {
                 model.addEquality(variablesForRequirement.get(requirement.fixedPersonId()), 1);
             }
-            if (!derivedTerminal) {
-                int maximum = requirement.maxCount() == null
+            int maximum = requirement.maxCount() == null
                         ? eligible.size()
                         : Math.min(requirement.maxCount(), eligible.size());
-                model.addLinearConstraint(sum(variablesForRequirement.values()), requirement.minCount(), maximum);
-            }
+            model.addLinearConstraint(sum(variablesForRequirement.values()), requirement.minCount(), maximum);
         }
 
         if (!preflightIssues.isEmpty()) {
@@ -88,10 +86,10 @@ public class ScheduleSolver {
                 model.addAtMostOne(variables.toArray(Literal[]::new));
             }
         }
-        addDerivedTerminalAssignments(model, request, assignmentVars);
-        addDerivedEarlyBombAssignments(model, request, assignmentVars);
-        addFlowNoRepeat(model, request.requirements(), assignmentVars);
-        terminalSupervisorVars = addTerminalSupervisorModel(model, request.requirements(), assignmentVars);
+        addRemainderAssignments(model, request, assignmentVars);
+        if (request.rules().flowNoRepeat()) addFlowNoRepeat(model, request.requirements(), assignmentVars);
+        terminalSupervisorVars = request.rules().supervisorRequired()
+                ? addTerminalSupervisorModel(model, request.requirements(), assignmentVars, request.rules().supervisorNoRepeat()) : Map.of();
 
         if (allAssignmentVars.isEmpty()) {
             return new GenerateResponse(request.scheduleDate(), "OPTIMAL", List.of(), List.of(), List.of());
@@ -104,7 +102,7 @@ public class ScheduleSolver {
         CpSolverStatus status = solver.solve(model);
         if (!hasSolution(status)) {
             String message = status == CpSolverStatus.INFEASIBLE
-                    ? "岗位需求之间存在冲突：即使各岗位候选人数足够，同一人员在同一时段也不能兼任多个岗位。"
+                    ? "无法同时满足当前人数、分组、资格和重复限制；请检查最低人数、剩余人员分配及回流/监管不重复规则。"
                     : "求解器未能在时限内找到可行排班。";
             return new GenerateResponse(request.scheduleDate(), status.name(), List.of(), List.of(message), List.of());
         }
@@ -115,7 +113,7 @@ public class ScheduleSolver {
         Map<Integer, Map<String, Boolean>> selected = snapshot(solver, assignmentVars);
         Map<Integer, Set<String>> selectedSupervisors = snapshotSupervisors(solver, terminalSupervisorVars);
 
-        List<IntVar> overstaffingVars = addOverstaffingModel(model, request.requirements(), assignmentVars);
+        List<IntVar> overstaffingVars = addOverstaffingModel(model, request, assignmentVars);
         boolean canOptimizeRepeats = true;
         if (!overstaffingVars.isEmpty()) {
             model.minimize(sum(overstaffingVars));
@@ -135,7 +133,8 @@ public class ScheduleSolver {
 
         // Spread meals across this schedule (including next morning) before balancing historical totals.
         // A soft objective preserves feasibility when fewer than nine people can cover three meals.
-        List<BoolVar> mealRepeats = addSamePositionRepeatModel(model, request.requirements(), assignmentVars, "MEAL");
+        List<BoolVar> mealRepeats = request.rules().mealPreferDistinct()
+                ? addSamePositionRepeatModel(model, request.requirements(), assignmentVars, "MEAL") : List.of();
         if (!mealRepeats.isEmpty()) {
             model.minimize(sum(mealRepeats));
             CpSolver mealSolver = newSolver();
@@ -150,7 +149,7 @@ public class ScheduleSolver {
             }
         }
 
-        List<IntVar> fairnessVars = addFairnessModel(model, request, assignmentVars);
+        List<IntVar> fairnessVars = request.rules().balanceHistory() ? addFairnessModel(model, request, assignmentVars) : List.of();
         if (!fairnessVars.isEmpty()) {
             model.minimize(sum(fairnessVars));
             CpSolver fairnessSolver = newSolver();
@@ -167,7 +166,7 @@ public class ScheduleSolver {
             }
         }
 
-        List<BoolVar> repeatVars = canOptimizeRepeats
+        List<BoolVar> repeatVars = canOptimizeRepeats && request.rules().positionPreferDistinct()
                 ? addSamePositionRepeatModel(model, request.requirements(), assignmentVars, null)
                 : List.of();
         if (!repeatVars.isEmpty()) {
@@ -184,7 +183,7 @@ public class ScheduleSolver {
             }
         }
 
-        List<BoolVar> preferencePenalties = addRolePreferenceModel(model, request, assignmentVars);
+        List<BoolVar> preferencePenalties = request.rules().rolePreferences() ? addRolePreferenceModel(model, request, assignmentVars) : List.of();
         if (!preferencePenalties.isEmpty()) {
             model.minimize(sum(preferencePenalties));
             CpSolver preferenceSolver = newSolver();
@@ -208,17 +207,12 @@ public class ScheduleSolver {
                 fairness);
     }
 
-    public static void validateMealCount(String positionCode, int minCount, Integer maxCount) {
-        if ("MEAL".equals(positionCode) && (minCount != 3 || maxCount == null || maxCount != 3)) {
-            throw badRequest("每次打饭必须安排 3 人，最低和最高人数均须为 3。");
-        }
-    }
-
     private static void validateConfiguration(GenerateRequest request) {
         if (request == null || request.scheduleDate() == null || request.staff() == null || request.requirements() == null) {
             throw badRequest("排班日期、人员和岗位需求不能为空。");
         }
 
+        request.rules().validate();
         Set<String> personIds = new LinkedHashSet<>();
         for (StaffMember person : request.staff()) {
             if (person == null || person.id() == null || person.id().isBlank() || person.name() == null
@@ -246,16 +240,12 @@ public class ScheduleSolver {
                     || requirement.positionName() == null || requirement.groupCode() == null) {
                 throw badRequest("岗位需求字段不能为空。");
             }
-            if (TimeSlotCatalog.find(requirement.slotCode()) == null) {
+            if (request.rules().timeSlot(requirement.slotCode()) == null) {
                 throw badRequest("未知时间段：" + requirement.slotCode());
             }
             if (requirement.positionCode().equals("LEADER")) {
                 throw badRequest("负责人不是独立岗位；请配置候机楼岗位，负责人会从候机楼人员中标记。");
             }
-            if (requirement.positionCode().equals("BOMB") && requirement.minCount() < 3) {
-                throw badRequest("防爆岗位每段至少安排 3 人。");
-            }
-            validateMealCount(requirement.positionCode(), requirement.minCount(), requirement.maxCount());
             if (requirement.minCount() < 0 || requirement.maxCount() != null
                     && requirement.maxCount() < requirement.minCount()) {
                 throw badRequest("岗位需求人数范围无效：" + requirement.positionCode());
@@ -286,78 +276,16 @@ public class ScheduleSolver {
             }
         }
 
-        Map<String, List<StaffingRequirement>> requirementsBySlot = new LinkedHashMap<>();
-        request.requirements().forEach(requirement -> requirementsBySlot
-                .computeIfAbsent(requirement.slotCode(), ignored -> new ArrayList<>()).add(requirement));
-        for (Map.Entry<String, List<StaffingRequirement>> slot : requirementsBySlot.entrySet()) {
-            List<StaffingRequirement> requirements = slot.getValue();
-            StaffingRequirement bomb = requirement(requirements, "BOMB");
-            StaffingRequirement terminal = requirement(requirements, "TERMINAL");
-            boolean derivesTerminal = !isFixedEarlyTerminalSlot(slot.getKey()) && requirements.stream().anyMatch(item ->
-                    item.positionCode().equals("BOMB") || item.positionCode().equals("MEZZANINE"));
-            if (derivesTerminal && terminal == null) {
-                throw badRequest("%s 配置了防爆或夹层时，还必须配置候机楼岗位；候机楼人员由剩余人员自动计算。"
-                        .formatted(slot.getKey()));
-            }
-            if (isFixedEarlyTerminalSlot(slot.getKey())
-                    && (terminal == null || terminal.minCount() != 1 || terminal.maxCount() == null || terminal.maxCount() != 1)) {
-                throw badRequest("次日早班候机楼（负责人）必须安排 1 人。");
-            }
-            if (isFixedEarlyTerminalSlot(slot.getKey())) {
-                StaffingRequirement mezzanine = requirements.stream()
-                        .filter(item -> item.positionCode().equals("MEZZANINE")).findFirst().orElse(null);
-                StaffingRequirement meal = requirements.stream()
-                        .filter(item -> item.positionCode().equals("MEAL")).findFirst().orElse(null);
-                boolean firstMorningSlot = slot.getKey().equals("NEXT_DAY_0530_0800");
-                if (bomb == null || mezzanine == null || firstMorningSlot && meal == null
-                        || !firstMorningSlot && meal != null
-                        || requirements.stream().anyMatch(item ->
-                        !Set.of("BOMB", "TERMINAL", "MEZZANINE", "MEAL").contains(item.positionCode()))) {
-                    throw badRequest("次日早班必须包含防爆、候机楼、夹层；仅 05:30–08:00 还需打早餐。");
-                }
-                if (bomb.minCount() < 3 || bomb.maxCount() != null
-                        || mezzanine.minCount() != 1 || mezzanine.maxCount() == null || mezzanine.maxCount() != 1) {
-                    throw badRequest("次日早班候机楼和夹层各 1 人；05:30–08:00 打早餐 3 人，剩余人员安排防爆（至少 3 人）。");
-                }
-                if (requirements.stream().filter(item -> item.positionCode().equals("BOMB")
-                                || item.positionCode().equals("TERMINAL")
-                                || item.positionCode().equals("MEZZANINE")
-                                || item.positionCode().equals("MEAL"))
-                        .anyMatch(item -> !item.groupCode().equals(terminal.groupCode()))) {
-                    throw badRequest("次日早班防爆、候机楼、夹层和打早餐必须由同一组承担。");
-                }
-            }
-            if (derivesTerminal && requirements.stream()
-                    .filter(item -> item.positionCode().equals("BOMB") || item.positionCode().equals("MEZZANINE"))
-                    .anyMatch(item -> !item.groupCode().equals(terminal.groupCode()))) {
-                throw badRequest("%s 的防爆、夹层和候机楼必须属于同一组。".formatted(slot.getKey()));
-            }
-            StaffingRequirement flow = requirement(requirements, "FLOW");
-            if (bomb != null && flow != null) {
-                String expectedFlowGroup;
-                if (slot.getKey().equals("NIGHT_UNTIL_END")) {
-                    expectedFlowGroup = bomb.groupCode();
-                } else {
-                    expectedFlowGroup = request.staff().stream().map(StaffMember::groupCode).distinct()
-                            .filter(group -> !group.equals(bomb.groupCode())).findFirst()
-                            .orElseThrow(() -> badRequest("常规回流岗位需要同时提供上岗组和轮休组人员。"));
-                }
-                if (!flow.groupCode().equals(expectedFlowGroup)) {
-                    throw badRequest("%s 的回流应由%s安排。".formatted(slot.getKey(),
-                            slot.getKey().equals("NIGHT_UNTIL_END") ? "轮岗组" : "轮休组"));
-                }
-            }
-        }
     }
 
     private static List<StaffMember> eligibleStaff(
             List<StaffMember> staff,
             StaffingRequirement requirement,
-            List<StaffingRequirement> allRequirements) {
+            List<StaffingRequirement> allRequirements, boolean fixedExclusive) {
         return staff.stream()
                 .filter(StaffMember::enabled)
                 .filter(person -> {
-                    boolean fixedAnywhere = allRequirements.stream()
+                    boolean fixedAnywhere = fixedExclusive && allRequirements.stream()
                             .anyMatch(item -> person.id().equals(item.fixedPersonId()));
                     return fixedAnywhere
                             ? person.id().equals(requirement.fixedPersonId())
@@ -366,7 +294,7 @@ public class ScheduleSolver {
                             && item.slotCode().equals(requirement.slotCode())
                             && (isIndependentFromStaffing(item.positionCode())
                             || isIndependentFromStaffing(requirement.positionCode())))
-                            : person.groupCode().equals(requirement.groupCode());
+                            : person.id().equals(requirement.fixedPersonId()) || person.groupCode().equals(requirement.groupCode());
                 })
                 .filter(person -> requirement.positionCode().equals("TERMINAL")
                         || person.qualifiedPositionCodes().contains(requirement.positionCode()))
@@ -375,33 +303,15 @@ public class ScheduleSolver {
 
     private static boolean isFixedOutsideGroupSlot(
             GenerateRequest request, String slotCode, String groupCode, StaffMember person) {
-        boolean fixedAnywhere = request.requirements().stream()
+        if (request.requirements().stream().anyMatch(r -> person.id().equals(r.fixedPersonId())
+                && r.slotCode().equals(slotCode) && !r.groupCode().equals(groupCode)
+                && !isIndependentFromStaffing(r.positionCode()))) return true;
+        boolean fixedAnywhere = request.rules().fixedExclusive() && request.requirements().stream()
                 .anyMatch(requirement -> person.id().equals(requirement.fixedPersonId()));
         return fixedAnywhere && request.requirements().stream().noneMatch(requirement ->
                 requirement.slotCode().equals(slotCode) && person.id().equals(requirement.fixedPersonId())
                         && (requirement.groupCode().equals(groupCode)
                         || isIndependentFromStaffing(requirement.positionCode())));
-    }
-
-    private static StaffingRequirement requirement(List<StaffingRequirement> requirements, String positionCode) {
-        return requirements.stream().filter(item -> item.positionCode().equals(positionCode)).findFirst().orElse(null);
-    }
-
-    private static boolean isDerivedTerminal(List<StaffingRequirement> requirements, int index) {
-        StaffingRequirement terminal = requirements.get(index);
-        return terminal.positionCode().equals("TERMINAL") && !isFixedEarlyTerminalSlot(terminal.slotCode())
-                && requirements.stream().anyMatch(item ->
-                item.slotCode().equals(terminal.slotCode())
-                        && (item.positionCode().equals("BOMB") || item.positionCode().equals("MEZZANINE")));
-    }
-
-    private static boolean isDerivedEarlyBomb(List<StaffingRequirement> requirements, int index) {
-        StaffingRequirement bomb = requirements.get(index);
-        return bomb.positionCode().equals("BOMB") && isFixedEarlyTerminalSlot(bomb.slotCode());
-    }
-
-    private static boolean isFixedEarlyTerminalSlot(String slotCode) {
-        return slotCode.equals("NEXT_DAY_0530_0800") || slotCode.equals("NEXT_DAY_0800_0900");
     }
 
     private static boolean isIndependentFromStaffing(String positionCode) {
@@ -425,7 +335,7 @@ public class ScheduleSolver {
             GroupPosition key = entry.getKey();
             List<StaffMember> eligible = entry.getValue().stream()
                     .flatMap(index -> eligibleStaff(request.staff(), request.requirements().get(index),
-                            request.requirements()).stream())
+                            request.requirements(), request.rules().fixedExclusive()).stream())
                     .collect(java.util.stream.Collectors.toMap(StaffMember::id, person -> person,
                             (first, ignored) -> first, LinkedHashMap::new))
                     .values().stream().toList();
@@ -472,13 +382,13 @@ public class ScheduleSolver {
 
     private static List<IntVar> addOverstaffingModel(
             CpModel model,
-            List<StaffingRequirement> requirements,
+            GenerateRequest request,
             Map<Integer, Map<String, BoolVar>> assignmentVars) {
+        List<StaffingRequirement> requirements = request.requirements();
         List<IntVar> overstaffing = new ArrayList<>();
         for (int i = 0; i < requirements.size(); i++) {
             StaffingRequirement requirement = requirements.get(i);
-            if (requirement.maxCount() != null || isDerivedTerminal(requirements, i)
-                    || isDerivedEarlyBomb(requirements, i)) {
+            if (requirement.maxCount() != null || request.rules().remainder(requirement.slotCode()).equals(requirement.positionCode())) {
                 continue;
             }
             Map<String, BoolVar> variables = assignmentVars.getOrDefault(i, Map.of());
@@ -493,38 +403,6 @@ public class ScheduleSolver {
             overstaffing.add(excess);
         }
         return overstaffing;
-    }
-
-    private static void addDerivedEarlyBombAssignments(
-            CpModel model,
-            GenerateRequest request,
-            Map<Integer, Map<String, BoolVar>> assignmentVars) {
-        for (int bombIndex = 0; bombIndex < request.requirements().size(); bombIndex++) {
-            if (!isDerivedEarlyBomb(request.requirements(), bombIndex)) {
-                continue;
-            }
-            StaffingRequirement bomb = request.requirements().get(bombIndex);
-            for (StaffMember person : request.staff()) {
-                if (!person.enabled() || !person.groupCode().equals(bomb.groupCode())
-                        || isFixedOutsideGroupSlot(request, bomb.slotCode(), bomb.groupCode(), person)) {
-                    continue;
-                }
-                List<BoolVar> sameSlotAssignments = new ArrayList<>();
-                for (int index = 0; index < request.requirements().size(); index++) {
-                    StaffingRequirement requirement = request.requirements().get(index);
-                    if (!requirement.slotCode().equals(bomb.slotCode())
-                            || !requirement.groupCode().equals(bomb.groupCode())
-                            || isIndependentFromStaffing(requirement.positionCode())) {
-                        continue;
-                    }
-                    BoolVar variable = assignmentVars.getOrDefault(index, Map.of()).get(person.id());
-                    if (variable != null) {
-                        sameSlotAssignments.add(variable);
-                    }
-                }
-                model.addEquality(sum(sameSlotAssignments), 1);
-            }
-        }
     }
 
     private static void addFlowNoRepeat(
@@ -543,12 +421,13 @@ public class ScheduleSolver {
                 .forEach(variables -> model.addAtMostOne(variables.toArray(Literal[]::new)));
     }
 
-    private static void addDerivedTerminalAssignments(
+    private static void addRemainderAssignments(
             CpModel model,
             GenerateRequest request,
             Map<Integer, Map<String, BoolVar>> assignmentVars) {
         for (int terminalIndex = 0; terminalIndex < request.requirements().size(); terminalIndex++) {
-            if (!isDerivedTerminal(request.requirements(), terminalIndex)) {
+            if (!request.rules().remainder(request.requirements().get(terminalIndex).slotCode())
+                    .equals(request.requirements().get(terminalIndex).positionCode())) {
                 continue;
             }
             StaffingRequirement terminal = request.requirements().get(terminalIndex);
@@ -582,7 +461,7 @@ public class ScheduleSolver {
     private static Map<Integer, Map<String, BoolVar>> addTerminalSupervisorModel(
             CpModel model,
             List<StaffingRequirement> requirements,
-            Map<Integer, Map<String, BoolVar>> assignmentVars) {
+            Map<Integer, Map<String, BoolVar>> assignmentVars, boolean noRepeat) {
         Map<Integer, Map<String, BoolVar>> supervisorVars = new LinkedHashMap<>();
         Map<String, List<BoolVar>> byPerson = new LinkedHashMap<>();
         for (int i = 0; i < requirements.size(); i++) {
@@ -597,10 +476,14 @@ public class ScheduleSolver {
                 choices.put(entry.getKey(), choice);
                 byPerson.computeIfAbsent(entry.getKey(), ignored -> new ArrayList<>()).add(choice);
             }
-            model.addEquality(sum(choices.values()), 1);
+            BoolVar occupied = model.newBoolVar("terminal_occupied_" + i);
+            var assigned = assignmentVars.getOrDefault(i, Map.of()).values();
+            model.addGreaterOrEqual(sum(assigned), occupied);
+            model.addLessOrEqual(sum(assigned), LinearExpr.term(occupied, Math.max(1, assigned.size())));
+            model.addEquality(sum(choices.values()), occupied);
             supervisorVars.put(i, choices);
         }
-        byPerson.values().stream().filter(choices -> choices.size() > 1)
+        if (noRepeat) byPerson.values().stream().filter(choices -> choices.size() > 1)
                 .forEach(choices -> model.addAtMostOne(choices.toArray(Literal[]::new)));
         return supervisorVars;
     }
@@ -631,7 +514,7 @@ public class ScheduleSolver {
                         StaffingRequirement terminal = request.requirements().get(terminalIndex);
                         BoolVar terminalVariable = assignmentVars.getOrDefault(terminalIndex, Map.of()).get(personId);
                         if (terminal.positionCode().equals("TERMINAL") && !terminal.slotCode().equals(slotCode)
-                                && TimeSlotCatalog.find(terminal.slotCode()).dayOffset() == 0
+                                && request.rules().timeSlot(terminal.slotCode()).dayOffset() == 0
                                 && terminalVariable != null) {
                             otherTerminalAssignments.add(terminalVariable);
                         }
@@ -708,14 +591,14 @@ public class ScheduleSolver {
         for (int i = 0; i < request.requirements().size(); i++) {
             indexes.add(i);
         }
-        indexes.sort(Comparator.comparingInt(i -> TimeSlotCatalog.find(request.requirements().get(i).slotCode()).sequence()));
+        indexes.sort(Comparator.comparingInt(i -> request.rules().timeSlot(request.requirements().get(i).slotCode()).sequence()));
 
         Map<String, StaffMember> peopleById = new HashMap<>();
         request.staff().forEach(person -> peopleById.put(person.id(), person));
         List<Assignment> assignments = new ArrayList<>();
         for (int index : indexes) {
             StaffingRequirement requirement = request.requirements().get(index);
-            TimeSlotCatalog.TimeSlot slot = TimeSlotCatalog.find(requirement.slotCode());
+            TimeSlotCatalog.TimeSlot slot = request.rules().timeSlot(requirement.slotCode());
             Set<String> supervisorIds = selectedSupervisors.getOrDefault(index, Set.of());
             List<PersonSummary> people = selected.getOrDefault(index, Map.of()).entrySet().stream()
                     .filter(Map.Entry::getValue)
@@ -759,7 +642,7 @@ public class ScheduleSolver {
         Map<GroupPosition, Map<String, Long>> totalsByGroupPosition = new LinkedHashMap<>();
         for (StaffingRequirement requirement : request.requirements()) {
             GroupPosition key = new GroupPosition(requirement.groupCode(), requirement.positionCode());
-            for (StaffMember person : eligibleStaff(request.staff(), requirement, request.requirements())) {
+            for (StaffMember person : eligibleStaff(request.staff(), requirement, request.requirements(), request.rules().fixedExclusive())) {
                 long total = person.historicalCounts().getOrDefault(requirement.positionCode(), 0)
                         + todayCounts.getOrDefault(
                         new GroupPersonPosition(key.groupCode(), key.positionCode(), person.id()), 0L);
