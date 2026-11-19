@@ -333,7 +333,13 @@ public final class DesktopRuntime {
                 throw new IOException(tool + " 执行失败，请查看 logs/last-database-error.log。");
             }
             return result;
-        } finally { Files.deleteIfExists(output); }
+        } finally {
+            try { Files.deleteIfExists(output); }
+            catch (IOException error) {
+                // On Windows pg_ctl's server child keeps stdout open until PostgreSQL stops.
+                output.toFile().deleteOnExit();
+            }
+        }
     }
 
     private synchronized void closeWeb() {
