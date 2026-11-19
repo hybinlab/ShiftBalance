@@ -1,0 +1,7 @@
+{
+  "identifier": "setup",
+  "description": "Only the bundled startup page can configure local services. No remote page receives native privileges.",
+  "windows": ["main"],
+  "local": true,
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

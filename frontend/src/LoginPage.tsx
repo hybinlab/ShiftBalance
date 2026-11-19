@@ -6,6 +6,7 @@ import './LoginPage.css'
 
 type Credentials = { username: string; password: string }
 type Props = {
+  localOnly?: boolean
   onSubmit: (credentials: Credentials) => Promise<void>
   loading: boolean
   error: string
@@ -13,7 +14,7 @@ type Props = {
   onApplyApiBase: (value: string) => void
 }
 
-export default function LoginPage({ onSubmit, loading, error, apiBase, onApplyApiBase }: Props) {
+export default function LoginPage({ localOnly = false, onSubmit, loading, error, apiBase, onApplyApiBase }: Props) {
   const [apiInput, setApiInput] = useState(apiBase)
   return (
     <main className="login-page">
@@ -74,13 +75,13 @@ export default function LoginPage({ onSubmit, loading, error, apiBase, onApplyAp
           </Form>
 
           <div className="login-form-foot">账号由系统管理员配置，请使用分配的账号登录。</div>
-          <details className="login-api-settings">
+          {!localOnly && <details className="login-api-settings">
             <summary>接口地址设置</summary>
             <div className="login-api-row">
               <Input size="small" aria-label="API 根地址" value={apiInput} onChange={(event) => setApiInput(event.target.value)} placeholder="留空使用本地开发代理" />
               <Button size="small" onClick={() => onApplyApiBase(apiInput)}>应用</Button>
             </div>
-          </details>
+          </details>}
         </div>
       </section>
     </main>

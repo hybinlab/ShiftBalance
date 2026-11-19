@@ -4,6 +4,10 @@ ShiftBalance 是面向两组轮班的排班管理系统，包含候选排班生�
 
 管理员发布当前排班后，浏览器自动下载高清 PNG 排班表；已发布版本也可点击“导出 PNG”再次下载。图片包含各岗位、次日时段、过夜和推电宝安排，并保留监管、换廖和打饭颜色标记。文件名包含排班日期与版本号；图片导出失败不会撤销发布，可手动重试。此功能无需数据库升级。导出数据检查：`node frontend/scripts/check-schedule-image.mjs`。
 
+## Windows 单机桌面版
+
+独立 Tauri 窗口、内置 Java 和 PostgreSQL，支持离线运行。桌面构建、数据目录、备份恢复和 Windows 安装包说明见 [desktop/README.md](desktop/README.md)。服务器部署继续使用下述方式，两者分别保存数据。
+
 ## 部署结构
 
 Docker Compose 启动两个容器：Spring Boot 后端和 Nginx 前端。Nginx 提供 React 页面，并将 `/api` 和接口文档请求转发给后端。PostgreSQL 使用已有的 database VM，Compose 不会创建本地数据库容器。

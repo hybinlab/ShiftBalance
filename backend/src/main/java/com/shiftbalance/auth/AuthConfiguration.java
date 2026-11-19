@@ -66,7 +66,8 @@ public class AuthConfiguration {
     SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             SecurityContextRepository contextRepository,
-            CorsConfigurationSource corsConfigurationSource) throws Exception {
+            CorsConfigurationSource corsConfigurationSource,
+            @Value("${shiftbalance.desktop:false}") boolean desktop) throws Exception {
         CookieCsrfTokenRepository csrfRepository = new CookieCsrfTokenRepository();
         csrfRepository.setHeaderName("X-CSRF-TOKEN");
         csrfRepository.setCookieCustomizer(cookie -> cookie.httpOnly(true).sameSite("Lax"));
@@ -82,6 +83,9 @@ public class AuthConfiguration {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/api/auth/csrf", "/api/auth/session", "/api/auth/login").permitAll()
                         .requestMatchers("/api/auth/**").authenticated()
+                        .requestMatchers(request -> desktop && "GET".equals(request.getMethod()) &&
+                                (List.of("/", "/index.html", "/favicon.svg", "/login-ripple.svg").contains(request.getServletPath())
+                                        || request.getServletPath().startsWith("/assets/"))).permitAll()
                         .requestMatchers("/doc.html", "/webjars/**", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/error").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(errors -> errors

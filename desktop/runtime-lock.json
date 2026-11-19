@@ -1,0 +1,4 @@
+{
+  "postgresUrl": "https://get.enterprisedb.com/postgresql/postgresql-17.12-2-windows-x64-binaries.zip",
+  "postgresSha256": "520c8c6f19abb3b31fa83ec5e486e2f769eedd7593d94e60a7cda8a5bfb4df91"
+}

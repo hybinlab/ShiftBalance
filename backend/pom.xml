@@ -109,4 +109,19 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Windows native solver is shipped only in desktop builds. -->
+        <profile>
+            <id>desktop-windows</id>
+            <dependencies>
+                <dependency>
+                    <groupId>com.google.ortools</groupId>
+                    <artifactId>ortools-win32-x86-64</artifactId>
+                    <version>${ortools.version}</version>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>

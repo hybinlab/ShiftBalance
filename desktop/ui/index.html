@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN" data-type="software">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="设置 ShiftBalance 本地数据目录与管理员账号。">
+  <meta name="page-type" content="software">
+  <meta name="site-kind" content="software">
+  <meta name="theme-color" content="#f2f5f9">
+  <title>ShiftBalance · 本地工作台</title>
+  <link rel="icon" href="favicon.svg">
+  <link rel="stylesheet" href="setup.css">
+  <script src="setup.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><img src="favicon.svg" width="40" height="40" alt=""><strong>ShiftBalance</strong><span>桌面版</span></header>
+    <section class="setup" aria-labelledby="heading">
+      <p class="eyebrow">本地排班工作台</p>
+      <h1 id="heading">把排班留在这台电脑。</h1>
+      <p class="intro" id="intro">选择数据保存位置，设置管理员账号，即可开始使用。</p>
+      <form id="setup-form">
+        <label for="root">数据保存位置</label>
+        <div class="directory"><input id="root" name="root" required readonly><button id="choose" type="button">选择目录</button></div>
+        <p class="hint">人员、规则和历史保存在 data；备份和排班图片分别保存在 backups、exports。</p>
+        <fieldset id="account">
+          <legend>首次使用 · 创建管理员</legend>
+          <div class="fields">
+            <div><label for="username">账号</label><input id="username" name="username" autocomplete="username" maxlength="100" required value="admin"></div>
+            <div><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required aria-describedby="password-hint"></div>
+          </div>
+          <p class="hint" id="password-hint">至少 8 位。进入系统后可在用户资料页修改。</p>
+        </fieldset>
+        <p id="error" role="alert" hidden></p>
+        <button id="start" class="primary" type="submit">创建本地工作台</button>
+      </form>
+      <div class="status" id="status" role="status" aria-live="polite" hidden><span class="progress" aria-hidden="true"></span><span id="status-text">正在启动…</span></div>
+    </section>
+    <footer>数据保存在你选择的目录，断网也可排班。<span>升级保留数据 · 备份可迁移</span></footer>
+  </main>
+</body>
+</html>

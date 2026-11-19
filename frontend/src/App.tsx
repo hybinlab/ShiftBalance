@@ -189,7 +189,8 @@ const ROLE_CLASS: Record<string, string> = {
 }
 
 const today = toIsoDate(new Date())
-const envApiBase = import.meta.env.VITE_API_BASE_URL ?? ''
+const desktopMode = import.meta.env.VITE_DESKTOP === 'true'
+const envApiBase = desktopMode ? '' : import.meta.env.VITE_API_BASE_URL ?? ''
 type AuthSession = { authenticated: boolean; username: string | null; displayName: string | null }
 type UserProfile = { username: string; avatarAvailable: boolean }
 type AppModule = 'home' | 'schedule' | 'calendar' | 'history' | 'analytics' | 'rules' | 'profile' | ManagementModule
@@ -1232,7 +1233,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
           if (key === 'home' || key === 'schedule' || key === 'calendar' || key === 'history' || key === 'people' || key === 'groups' || key === 'positions' || key === 'analytics' || key === 'rules') setActiveModule(key)
         }} />
         <div className="sidebar-bottom">
-          <Button type="text" className="nav-item settings-link" icon={<Icon name="settings" />} onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }}>接口设置<span className="side-chevron">›</span></Button>
+          {!desktopMode && <Button type="text" className="nav-item settings-link" icon={<Icon name="settings" />} onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }}>接口设置<span className="side-chevron">›</span></Button>}
           <button type="button" className="account-card" aria-label="打开用户资料" onClick={() => setActiveModule('profile')}>
             <Avatar className="account-avatar" src={profile?.avatarAvailable ? `${normalizeApiBase(apiBase)}/api/auth/profile/avatar?v=${avatarVersion}` : undefined} crossOrigin="use-credentials">{(session.username ?? '管').slice(0, 1)}</Avatar>
             <div><strong>{session.username}</strong><small>用户资料</small></div><span className="account-more">···</span>
@@ -1245,7 +1246,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
           <div className="breadcrumb">工作台 <span>/</span> <strong>{{ home: '首页', schedule: '排班管理', calendar: '排班日历', history: '历史记录', people: '人员管理', groups: '分组管理', positions: '岗位管理', analytics: '统计分析', rules: '排班规则', profile: '用户资料' }[activeModule]}</strong></div>
           <div className="topbar-tools">
             <Badge className={`connection-state ${day.errors.length ? 'offline' : day.loading ? 'connecting' : 'online'}`} status={day.errors.length ? 'error' : day.loading ? 'processing' : 'success'} text={day.errors.length ? '接口异常' : day.loading ? '连接中' : '已连接'} />
-            <Button type="text" className="icon-button" aria-label="接口设置" icon={<Icon name="settings" />} onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }} />
+            {!desktopMode && <Button type="text" className="icon-button" aria-label="接口设置" icon={<Icon name="settings" />} onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }} />}
             <div className="top-date"><span className="date-dot" />{displayDate(today, { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}</div>
           </div>
         </header>
@@ -1268,7 +1269,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
             onNavigate={setActiveModule}
             onRetry={() => setReloadKey((value) => value + 1)}
           /> : activeModule === 'schedule' ? <>
-          {day.errors.length > 0 && <Alert className="error-banner" type="error" showIcon message="部分接口请求失败" description={day.errors.join('；')} action={<Space><Button size="small" onClick={() => setReloadKey((value) => value + 1)}>重试</Button><Button size="small" type="link" onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }}>检查连接</Button></Space>} />}
+          {day.errors.length > 0 && <Alert className="error-banner" type="error" showIcon message="部分接口请求失败" description={day.errors.join('；')} action={<Space><Button size="small" onClick={() => setReloadKey((value) => value + 1)}>重试</Button>{!desktopMode && <Button size="small" type="link" onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }}>检查连接</Button>}</Space>} />}
           {notice && <Alert className="notice-banner" type={notice.includes('失败') || notice.includes('不能') || notice.includes('至少') || notice.includes('HTTP') || notice.includes('无法') ? 'error' : 'success'} showIcon closable message={notice} onClose={() => setNotice('')} />}
 
           <div className="workspace-grid">
@@ -1462,13 +1463,13 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
                   />
                 : <ManagementPages module={activeModule} apiBase={apiBase} apiRequest={apiRequest} onDataChanged={() => setReloadKey((value) => value + 1)} />}
 
-          {activeModule !== 'home' && <footer className="page-footer"><span>ShiftBalance</span><span>{activeModule === 'schedule' ? '生成和调整后的排班需人工发布，发布后进入历史统计。' : activeModule === 'calendar' ? '轮班状态按标准模板锚点推算；排班记录显示待发布或最新已发布版本。' : activeModule === 'history' ? '删除已发布版本会同步改变历史岗位统计与公平性计算。' : activeModule === 'analytics' ? '公平次数按人员资格、组别和排班时段需求共同核算。' : activeModule === 'rules' ? '标准规则自动应用；日期例外只覆盖所选日期。' : activeModule === 'profile' ? '账号资料仅包含用户名、头像和密码。' : '管理数据与排班服务共享，并按生效日期保留人员资格和组别变更记录。'}</span><Button type="link" onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }}>API 设置 <Icon name="arrow" size={14} /></Button></footer>}
+          {activeModule !== 'home' && <footer className="page-footer"><span>ShiftBalance</span><span>{activeModule === 'schedule' ? '生成和调整后的排班需人工发布，发布后进入历史统计。' : activeModule === 'calendar' ? '轮班状态按标准模板锚点推算；排班记录显示待发布或最新已发布版本。' : activeModule === 'history' ? '删除已发布版本会同步改变历史岗位统计与公平性计算。' : activeModule === 'analytics' ? '公平次数按人员资格、组别和排班时段需求共同核算。' : activeModule === 'rules' ? '标准规则自动应用；日期例外只覆盖所选日期。' : activeModule === 'profile' ? '账号资料仅包含用户名、头像和密码。' : '管理数据与排班服务共享，并按生效日期保留人员资格和组别变更记录。'}</span>{!desktopMode && <Button type="link" onClick={() => { setApiInput(apiBase); setSettingsOpen(true) }}>API 设置 <Icon name="arrow" size={14} /></Button>}</footer>}
         </div>
       </main>
 
       {personDrag && <div className="person-drag-ghost" style={{ left: personDrag.x + 12, top: personDrag.y + 12 }}>{personName(personDrag.personId, day.people)}</div>}
 
-      <Modal open={settingsOpen} title="后端接口连接" onCancel={() => setSettingsOpen(false)} footer={[
+      <Modal open={!desktopMode && settingsOpen} title="后端接口连接" onCancel={() => setSettingsOpen(false)} footer={[
         <Button key="cancel" onClick={() => setSettingsOpen(false)}>取消</Button>,
         <Button key="save" type="primary" onClick={() => void saveApiSettings()}>保存并重连</Button>,
       ]}>
@@ -1489,7 +1490,7 @@ function Workbench({ apiBase, setApiBase, session, onSessionUpdated, onLogout }:
 
 function App() {
   const { message } = AntApp.useApp()
-  const [apiBase, setApiBase] = useState(() => localStorage.getItem('shiftbalance.apiBase') ?? envApiBase)
+  const [apiBase, setApiBase] = useState(() => desktopMode ? '' : localStorage.getItem('shiftbalance.apiBase') ?? envApiBase)
   const [session, setSession] = useState<AuthSession | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [loginLoading, setLoginLoading] = useState(false)
@@ -1540,6 +1541,7 @@ function App() {
 
   if (authLoading) return <div className="auth-loading"><Spin size="large" tip="正在验证登录状态…" /></div>
   if (!session) return <LoginPage
+    localOnly={desktopMode}
     onSubmit={login}
     loading={loginLoading}
     error={loginError}

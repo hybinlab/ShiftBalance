@@ -1,0 +1,11 @@
+{
+  "name": "shiftbalance-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "check": "node scripts/check-setup.mjs && cargo test --locked --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": { "@tauri-apps/cli": "^2.0.0" }
+}
