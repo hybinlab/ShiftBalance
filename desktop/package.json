@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
-    "check": "node scripts/check-setup.mjs && cargo test --locked --manifest-path src-tauri/Cargo.toml"
+    "check": "node scripts/check-setup.mjs && cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "build:windows": "node scripts/check-setup.mjs && cargo test --release --locked --target x86_64-pc-windows-msvc --manifest-path src-tauri/Cargo.toml && tauri build --target x86_64-pc-windows-msvc"
   },
-  "devDependencies": { "@tauri-apps/cli": "^2.0.0" }
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
 }

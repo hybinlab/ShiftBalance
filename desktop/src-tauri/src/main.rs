@@ -327,7 +327,7 @@ fn main() {
             let menu = Menu::with_items(app, &[&data_menu])?;
             app.set_menu(menu)?;
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("ShiftBalance · 排班系统").inner_size(1440.0, 960.0).min_inner_size(1000.0, 700.0)
+                .title("ShiftBalance · 排班系统").inner_size(1440.0, 960.0).min_inner_size(960.0, 600.0).prevent_overflow()
                 // Native file-drop interception would swallow the schedule's HTML drag-and-drop.
                 .disable_drag_drop_handler()
                 .on_navigation({

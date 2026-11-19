@@ -38,7 +38,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri -> target
-      - name: Build and verify offline Windows installer
+          cache-on-failure: true
+      - name: Prepare runtime and verify Windows database / solver
         shell: pwsh
         env:
           POSTGRES_URL: ${{ inputs.postgres_url }}
@@ -53,7 +54,15 @@ jobs:
           }
           New-Item -ItemType Directory -Force desktop/build | Out-Null
           Invoke-WebRequest $uri -OutFile desktop/build/postgresql.zip
-          ./desktop/build-windows.ps1 -PostgresZip desktop/build/postgresql.zip -PostgresSha256 $checksum
+          ./desktop/build-windows.ps1 -PostgresZip desktop/build/postgresql.zip -PostgresSha256 $checksum -PrepareOnly
+      - name: Build Tauri Windows installer
+        shell: pwsh
+        working-directory: desktop
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop npm install failed.' }
+          npm run build:windows
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:

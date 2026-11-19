@@ -94,6 +94,15 @@ public final class DesktopSelfCheck {
                     "DELETE FROM desktop_schema_migration WHERE name='migration_v15_configurable_rules.sql'");
         }
         assert !Files.exists(root.resolve("data/postgres/postmaster.pid")) : "Database must stop with the desktop";
+        // Simulate a power loss between the two restore database renames, without a live web server.
+        databaseTool(binaries, root, "pg_ctl", "start", "-D", root.resolve("data/postgres").toString(), "-l", root.resolve("logs/crash-check.log").toString(),
+                "-w", "-t", "60", "-o", "-h 127.0.0.1 -p " + DesktopRuntime.freePort(0) + " -c unix_socket_directories=");
+        try {
+            databaseTool(binaries, root, "psql", "-d", "postgres", "-c", "DROP DATABASE IF EXISTS shiftbalance_previous");
+            databaseTool(binaries, root, "psql", "-d", "postgres", "-c", "ALTER DATABASE shiftbalance RENAME TO shiftbalance_previous");
+        } finally {
+            databaseTool(binaries, root, "pg_ctl", "stop", "-D", root.resolve("data/postgres").toString(), "-m", "fast", "-w", "-t", "60");
+        }
         // Reopening must not need bootstrap credentials or overwrite the existing account.
         try (Instance second = new Instance(root, payload, "", "")) {
             String url = second.await("ready");
@@ -107,21 +116,25 @@ public final class DesktopSelfCheck {
             }
         }
         assert !Files.exists(root.resolve("data/postgres/postmaster.pid"));
-        System.out.println("Desktop lifecycle checks passed: isolated UTF-8 directory, migrations, auth, backup, restore, server import, invalid archive, upgrade backup, restart, clean shutdown. Fixture: " + fixture);
+        System.out.println("Desktop lifecycle checks passed: isolated UTF-8 directory, migrations, auth, backup, restore, server import, invalid archive, interrupted restore recovery, upgrade backup, restart, clean shutdown. Fixture: " + fixture);
     }
 
     private static void databaseTool(Path binaries, Path root, String tool, String... arguments) throws Exception {
         Properties settings = new Properties();
         try (Reader reader = Files.newBufferedReader(root.resolve("config/database.properties"))) { settings.load(reader); }
-        String port = Files.readAllLines(root.resolve("data/postgres/postmaster.pid")).get(3);
         String extension = System.getProperty("os.name").startsWith("Windows") ? ".exe" : "";
-        List<String> command = new ArrayList<>(List.of(binaries.resolve(tool + extension).toString(), "-h", "127.0.0.1", "-p", port, "-U", "shiftbalance"));
+        List<String> command = new ArrayList<>(List.of(binaries.resolve(tool + extension).toString()));
+        if (!tool.equals("pg_ctl")) {
+            String port = Files.readAllLines(root.resolve("data/postgres/postmaster.pid")).get(3);
+            command.addAll(List.of("-h", "127.0.0.1", "-p", port, "-U", "shiftbalance"));
+        }
         command.addAll(List.of(arguments));
-        ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(root.resolve("tool-check.log").toFile());
+        Path log = Files.createTempFile(root, "tool-check-", ".log");
+        ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log.toFile());
         builder.environment().put("PGPASSWORD", settings.getProperty("password"));
         Process process = builder.start();
         if (!process.waitFor(60, TimeUnit.SECONDS)) { process.destroyForcibly(); throw new AssertionError(tool + " timed out"); }
-        assert process.exitValue() == 0 : Files.readString(root.resolve("tool-check.log"));
+        assert process.exitValue() == 0 : Files.readString(log);
     }
 
     private static HttpResponse<String> get(HttpClient client, String url, String path) throws Exception {

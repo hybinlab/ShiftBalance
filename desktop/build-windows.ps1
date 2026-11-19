@@ -75,8 +75,6 @@ if (-not $PrepareOnly) {
     Push-Location $PSScriptRoot
     try {
         Run 'npm.cmd' @('ci')
-        Run 'node.exe' @('scripts/check-setup.mjs')
-        Run 'cargo.exe' @('test', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc', '--manifest-path', 'src-tauri/Cargo.toml')
-        Run 'npm.cmd' @('run', 'build', '--', '--target', 'x86_64-pc-windows-msvc')
+        Run 'npm.cmd' @('run', 'build:windows')
     } finally { Pop-Location }
 }

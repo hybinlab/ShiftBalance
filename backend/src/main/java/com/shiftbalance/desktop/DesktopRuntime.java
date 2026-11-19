@@ -149,7 +149,11 @@ public final class DesktopRuntime {
         execute("pg_ctl", false, "start", "-D", cluster.toString(), "-l", root.resolve("logs/postgres.log").toString(),
                 "-w", "-t", "60", "-o", "-h 127.0.0.1 -p " + port + " -c unix_socket_directories=");
         if (sql("postgres", "SELECT 1 FROM pg_database WHERE datname='shiftbalance'").isBlank()) {
-            execute("createdb", true, "--encoding=UTF8", "--template=template0", "shiftbalance");
+            if (!sql("postgres", "SELECT 1 FROM pg_database WHERE datname='shiftbalance_previous'").isBlank()) {
+                sql("postgres", "ALTER DATABASE shiftbalance_previous RENAME TO shiftbalance");
+            } else {
+                execute("createdb", true, "--encoding=UTF8", "--template=template0", "shiftbalance");
+            }
         }
     }
 
