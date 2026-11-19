@@ -63,6 +63,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop npm install failed.' }
           npm run build:windows
           if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
+      - name: Check native Windows dropdowns
+        shell: pwsh
+        working-directory: desktop
+        run: node scripts/check-windows-ui.mjs
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
@@ -77,4 +81,6 @@ jobs:
           name: Windows-desktop-test-logs
           path: |
             backend/target/desktop-self-check-*/**/*.log
+            backend/target/desktop-ui-check/**/logs/*.log
+            backend/target/desktop-ui-check/dropdown-failure.*
           retention-days: 7
