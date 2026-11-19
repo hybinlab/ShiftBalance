@@ -176,6 +176,7 @@ public final class DesktopSelfCheck {
                 JsonNode event = events.poll(5, TimeUnit.SECONDS);
                 if (event == null) continue;
                 String actual = event.path("type").asText();
+                if (actual.equals("status")) assert event.path("message").asText().contains("正在") : "UTF-8 status messages must survive the native pipe";
                 if (type.equals(actual)) return event.path("message").asText();
                 if (actual.equals("error") || actual.equals("exit")) {
                     for (String file : List.of("check-errors.log", "logs/last-database-error.log", "logs/postgres.log")) {

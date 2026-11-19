@@ -49,6 +49,9 @@ public final class DesktopRuntime {
     }
 
     public static void run() throws Exception {
+        // Windows console code pages must not corrupt the UTF-8 pipe protocol or redirected diagnostics.
+        System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.out), true, StandardCharsets.UTF_8));
+        System.setErr(new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8));
         DesktopRuntime runtime = new DesktopRuntime(Path.of(System.getenv("SHIFTBALANCE_DESKTOP_ROOT")),
                 Path.of(System.getenv("SHIFTBALANCE_DESKTOP_PAYLOAD")));
         // Credentials arrive on the private pipe, never in arguments, environment, or logs.
@@ -144,7 +147,7 @@ public final class DesktopRuntime {
         port = freePort(0);
         databaseStarted = true; // Cleanup also runs if pg_ctl times out after starting the server.
         execute("pg_ctl", false, "start", "-D", cluster.toString(), "-l", root.resolve("logs/postgres.log").toString(),
-                "-w", "-t", "60", "-o", "-h 127.0.0.1 -p " + port + " -c unix_socket_directories=''");
+                "-w", "-t", "60", "-o", "-h 127.0.0.1 -p " + port + " -c unix_socket_directories=");
         if (sql("postgres", "SELECT 1 FROM pg_database WHERE datname='shiftbalance'").isBlank()) {
             execute("createdb", true, "--encoding=UTF8", "--template=template0", "shiftbalance");
         }

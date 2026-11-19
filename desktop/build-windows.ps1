@@ -44,6 +44,13 @@ foreach ($folder in @('bin', 'lib', 'share', 'doc')) {
 }
 Get-ChildItem "$unpacked/pgsql" -File | Copy-Item -Destination "$payload/pgsql"
 Get-ChildItem "$payload/pgsql" -Recurse -Filter '*.pdb' | Remove-Item -Force
+# PostgreSQL's narrow Win32/CRT argv and file APIs need a UTF-8 process code page for Chinese paths.
+$manifestTool = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/mt.exe" | Sort-Object FullName | Select-Object -Last 1
+if (-not $manifestTool) { throw 'Install the Windows SDK manifest tool (mt.exe) with C++ Build Tools.' }
+foreach ($executable in Get-ChildItem "$payload/pgsql/bin" -Filter '*.exe') {
+    Run $manifestTool.FullName @('-nologo', '-manifest', "$PSScriptRoot/postgres-utf8.manifest", "-outputresource:$($executable.FullName);#1")
+}
+
 Run "$JavaHome/bin/jlink.exe" @('--add-modules', 'java.se,jdk.crypto.ec,jdk.unsupported,jdk.charsets,jdk.localedata,jdk.naming.dns,jdk.zipfs', '--strip-debug', '--no-header-files', '--no-man-pages', '--output', "$payload/runtime")
 Copy-Item "$JavaHome/legal" "$payload/jdk-legal" -Recurse
 Push-Location "$repo/frontend"

@@ -1,6 +1,6 @@
 # ShiftBalance Windows 桌面版
 
-独立 Tauri 窗口复用 React 页面和 Spring Boot 业务逻辑，随安装包提供 Java 25、PostgreSQL、Windows 排班求解器与 WebView2 离线安装程序。目标平台为 Windows 10/11 x64；安装后无需 Docker、Java、数据库安装或连接服务器。
+独立 Tauri 窗口复用 React 页面和 Spring Boot 业务逻辑，随安装包提供 Java 25、PostgreSQL、Windows 排班求解器与 WebView2 离线安装程序。目标平台为 Windows 10（1903 及以上）/11 x64；安装后无需 Docker、Java、数据库安装或连接服务器。
 
 桌面功能在 `feat/windows-desktop` 分支开发。服务器仍使用根目录的 Docker Compose，未设置 `SHIFTBALANCE_DESKTOP_ROOT` 时，后端沿用原启动流程；普通前端构建保留接口设置。
 
@@ -61,7 +61,7 @@ Get-FileHash C:\Downloads\postgresql-windows-x64-binaries.zip -Algorithm SHA256
   -PostgresSha256 <已确认的64位SHA256>
 ```
 
-脚本校验 ZIP，构建桌面专用前端和后端，加入 Windows OR-Tools、本地数据库与精简 Java 运行时，下载并验证 Microsoft VC++ 组件签名，执行隔离数据库回归，再打包 NSIS 安装程序。Tauri 将 WebView2 离线安装器嵌入最终包；构建时需要网络，安装运行不需要网络。Java 与 PostgreSQL 保留随包许可证。安装包体积包含这些运行环境，不是仅几 MB 的窗口壳。
+脚本校验 ZIP，构建桌面专用前端和后端，加入 Windows OR-Tools、本地数据库与精简 Java 运行时，下载并验证 Microsoft VC++ 组件签名，执行隔离数据库回归，再打包 NSIS 安装程序。Tauri 将 WebView2 离线安装器嵌入最终包；构建时需要网络，安装运行不需要网络。构建时用 Windows SDK 为 PostgreSQL 工具嵌入 UTF-8 进程清单，支持中文数据路径，无需修改 Windows 全局语言设置。Java 与 PostgreSQL 保留随包许可证。安装包体积包含这些运行环境，不是仅几 MB 的窗口壳。
 
 安装包位置：
 
