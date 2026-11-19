@@ -17,6 +17,7 @@
 数据根目录/
 ├─ data/
 │  ├─ postgres/              PostgreSQL 数据文件，不能在运行时直接拷贝
+│  ├─ tmp/                   上传与求解器临时文件
 │  └─ desktop.lock           数据目录独占锁
 ├─ config/
 │  ├─ database.properties    随机数据库凭据与本机页面端口，不能删除

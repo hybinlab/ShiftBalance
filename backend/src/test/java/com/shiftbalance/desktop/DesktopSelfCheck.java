@@ -56,6 +56,8 @@ public final class DesktopSelfCheck {
             HttpClient client = HttpClient.newBuilder().cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL)).build();
             assert get(client, url, "").statusCode() == 200 : "Login UI must be public";
             assert get(client, url, "api/people").statusCode() == 401 : "Business data must remain protected";
+            assert client.send(HttpRequest.newBuilder(URI.create(url + "api/auth/session")).header("Origin", "http://localhost:5173")
+                    .GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode() == 403 : "Desktop must reject cross-origin access";
             login(client, url, "admin");
             assert get(client, url, "api/groups").body().contains("A组");
             assert get(client, url, "api/people").body().equals("[]") : "No production personnel may be bundled";
@@ -144,7 +146,9 @@ public final class DesktopSelfCheck {
         final Process process;
         final Writer input;
         final BlockingQueue<JsonNode> events = new LinkedBlockingQueue<>();
+        final Path root;
         Instance(Path root, Path payload, String username, String password) throws Exception {
+            this.root = root;
             String java = Path.of(System.getProperty("java.home"), "bin", System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java").toString();
             ProcessBuilder builder = new ProcessBuilder(java, "-Dfile.encoding=UTF-8", "-cp", absoluteClasspath(), "com.shiftbalance.ShiftBalanceApplication");
             builder.directory(root.toFile()).redirectError(ProcessBuilder.Redirect.appendTo(root.resolve("check-errors.log").toFile()));
@@ -173,7 +177,13 @@ public final class DesktopSelfCheck {
                 if (event == null) continue;
                 String actual = event.path("type").asText();
                 if (type.equals(actual)) return event.path("message").asText();
-                if (actual.equals("error") || actual.equals("exit")) throw new AssertionError(event.toString());
+                if (actual.equals("error") || actual.equals("exit")) {
+                    for (String file : List.of("check-errors.log", "logs/last-database-error.log", "logs/postgres.log")) {
+                        Path log = root.resolve(file);
+                        if (Files.exists(log)) System.err.println(file + "\n" + Files.readString(log));
+                    }
+                    throw new AssertionError(event.toString());
+                }
             }
             throw new AssertionError("Timed out waiting for " + type);
         }

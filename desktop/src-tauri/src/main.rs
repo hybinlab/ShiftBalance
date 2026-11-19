@@ -150,6 +150,8 @@ fn start_services(
         return Err("缺少内置运行环境，请先执行桌面资源构建脚本。".into());
     }
     fs::create_dir_all(root.join("logs")).map_err(|e| e.to_string())?;
+    let temporary = root.join("data/tmp");
+    fs::create_dir_all(&temporary).map_err(|e| e.to_string())?;
     let error_log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -167,8 +169,9 @@ fn start_services(
         .args([
             "-Dfile.encoding=UTF-8",
             "--enable-native-access=ALL-UNNAMED",
-            "-jar",
         ])
+        .arg(format!("-Djava.io.tmpdir={}", temporary.display()))
+        .arg("-jar")
         .arg(payload.join("backend.jar"))
         .current_dir(&root)
         .env("SHIFTBALANCE_DESKTOP_ROOT", &root)

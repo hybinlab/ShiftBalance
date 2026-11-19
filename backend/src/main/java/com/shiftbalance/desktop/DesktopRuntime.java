@@ -92,7 +92,7 @@ public final class DesktopRuntime {
     }
 
     private void initializeDirectories() throws IOException {
-        for (String directory : List.of("data", "config", "backups", "exports", "logs")) {
+        for (String directory : List.of("data", "data/tmp", "config", "backups", "exports", "logs")) {
             Path path = Files.createDirectories(root.resolve(directory));
             restrictToOwner(path);
         }
@@ -211,6 +211,7 @@ public final class DesktopRuntime {
                 "--spring.datasource.url=jdbc:postgresql://127.0.0.1:" + port + "/shiftbalance",
                 "--spring.datasource.username=shiftbalance", "--spring.datasource.password=" + settings.getProperty("password"),
                 "--server.address=127.0.0.1", "--server.port=" + webPort,
+                "--shiftbalance.cors.allowed-origins=",
                 "--server.shutdown=graceful", "--spring.lifecycle.timeout-per-shutdown-phase=30s",
                 "--server.servlet.session.cookie.secure=false",
                 "--spring.web.resources.static-locations=" + payload.resolve("web").toUri(),
@@ -360,7 +361,10 @@ public final class DesktopRuntime {
         if (posix != null) posix.setPermissions(PosixFilePermissions.fromString(Files.isDirectory(path) ? "rwx------" : "rw-------"));
         AclFileAttributeView windows = Files.getFileAttributeView(path, AclFileAttributeView.class);
         if (windows != null) {
-            AclEntry.Builder entry = AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(Files.getOwner(path))
+            // Elevated accounts may create files owned by Administrators. PostgreSQL drops that group when launching.
+            UserPrincipal owner = path.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(System.getProperty("user.name"));
+            windows.setOwner(owner);
+            AclEntry.Builder entry = AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(owner)
                     .setPermissions(EnumSet.allOf(AclEntryPermission.class));
             if (Files.isDirectory(path)) entry.setFlags(AclEntryFlag.DIRECTORY_INHERIT, AclEntryFlag.FILE_INHERIT);
             windows.setAcl(List.of(entry.build()));
