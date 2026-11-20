@@ -91,6 +91,18 @@ jobs:
           $result = Start-Process $installer.FullName -ArgumentList '/S', "/D=$destination" -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Desktop installation failed: $($result.ExitCode)" }
           "SHIFTBALANCE_TEST_EXE=$destination/shiftbalance-desktop.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Apply current frontend to reused test bundle
+        if: ${{ inputs.installer_run_id }}
+        shell: pwsh
+        run: |
+          npm ci --prefix frontend
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend npm install failed.' }
+          $env:VITE_DESKTOP = 'true'
+          npm run build --prefix frontend
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop frontend build failed.' }
+          $web = Join-Path $env:RUNNER_TEMP 'ShiftBalance-ui-test/payload/web'
+          Remove-Item -Recurse -Force $web
+          Copy-Item frontend/dist $web -Recurse
       - name: Check native Windows dropdowns
         shell: pwsh
         working-directory: desktop

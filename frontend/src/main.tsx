@@ -13,6 +13,8 @@ createRoot(document.getElementById('root')!).render(
       locale={zhCN}
       theme={{
         token: {
+          // ponytail: skip popup motion in desktop WebView2 so positioning cannot wait on a stalled animation.
+          motion: import.meta.env.VITE_DESKTOP !== 'true',
           colorPrimary: '#2374ee',
           borderRadius: 8,
           controlHeight: 34,
