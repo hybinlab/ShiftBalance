@@ -50,6 +50,7 @@ async function evaluate(expression) {
   return response.result?.value
 }
 async function click(expression) {
+  await delay(500) // Let portal and modal entrance finish before recording pointer coordinates.
   const point = await evaluate(`(async () => {const element = (${expression}); if (!element) throw Error('Missing click target'); const before=element.getBoundingClientRect(); if(before.top<0 || before.bottom>innerHeight) element.scrollIntoView({block:'center',behavior:'instant'}); await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))); const r=element.getBoundingClientRect(); const x=r.x+r.width/2,y=r.y+r.height/2; const hit=document.elementFromPoint(x,y); if(!hit || !element.contains(hit)) throw Error('Click misses target: '+JSON.stringify({target:element.outerHTML,rect:r.toJSON(),hit:hit?.outerHTML})); return {x,y};})()`)
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point })
   await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point })
@@ -100,7 +101,7 @@ try {
   await click(`Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')).find(e=>e.textContent.includes('A组'))`)
   await until(() => evaluate(`(${filter}).textContent.includes('A组')`), 'selected group')
   await click(`Array.from(document.querySelectorAll('button')).find(e=>e.textContent.includes('新增人员'))`)
-  await until(() => evaluate(`(() => {const e=document.querySelector('.ant-modal');return e && e.getBoundingClientRect().height>0 && getComputedStyle(e).transform==='none' && !e.getAnimations().some(a=>a.playState==='running')})()`), 'person modal entrance')
+  await until(() => evaluate(`!!document.querySelector('.ant-modal .ant-select')`), 'person modal')
   const group = `document.querySelector('.ant-modal .ant-select')`
   await openSelect(group, 'Person modal group')
   await click(`Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')).find(e=>e.textContent.includes('B组'))`)
