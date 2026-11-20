@@ -59,10 +59,11 @@ const nav = label => `Array.from(document.querySelectorAll('.ant-menu-item')).fi
 async function openSelect(expression, label) {
   await click(expression)
   await delay(700) // Must remain open after focus and deferred outside-click handlers run.
-  const state = await evaluate(`(() => {const e=(${expression}); const input=e.querySelector('[role=combobox]'); return {expanded:input?.getAttribute('aria-expanded'),options:Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')).map(e=>({text:e.textContent, height:e.getBoundingClientRect().height})),focus:document.activeElement?.outerHTML,events:window.__popupEvents};})()`)
+  const state = await evaluate(`(() => {const e=(${expression}); const input=e.querySelector('[role=combobox]'); return {expanded:input?.getAttribute('aria-expanded'),options:Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')).map(e=>{const r=e.getBoundingClientRect();return {text:e.textContent,height:r.height,visible:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}}),focus:document.activeElement?.outerHTML,events:window.__popupEvents};})()`)
   console.log(`${label}: ${JSON.stringify(state)}`)
+  console.log('Popup layout:', JSON.stringify(await evaluate(`(() => {const popup=document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)');if(!popup)return null;let f=popup[Object.keys(popup).find(k=>k.startsWith('__reactFiber'))];const props=[];for(;f;f=f.return){const p=f.memoizedProps;if(p && ('ready' in p || 'target' in p || 'popupEle' in p))props.push({keys:Object.keys(p),ready:p.ready,open:p.open,target:p.target?.outerHTML,rect:p.target?.getBoundingClientRect?.().toJSON(),offsetX:p.offsetX,offsetY:p.offsetY,align:p.align});}const css=getComputedStyle(popup);return {html:popup.outerHTML.slice(0,1500),rect:popup.getBoundingClientRect().toJSON(),css:{width:css.width,height:css.height,display:css.display,position:css.position,transform:css.transform,visibility:css.visibility},props,focus:document.hasFocus(),visibility:document.visibilityState,userAgent:navigator.userAgent};})()`)))
   assert.equal(state.expanded, 'true', `${label} closed immediately`)
-  assert(state.options.some(option => option.height > 0), `${label} has no visible options`)
+  assert(state.options.some(option => option.height > 0 && option.visible), `${label} has no visible options`)
 }
 try {
   const target = await until(async () => {
@@ -112,7 +113,9 @@ try {
   await until(() => evaluate(`!!document.querySelector('.date-picker-control')`), 'schedule page')
   await click(`document.querySelector('.date-picker-control input')`)
   await delay(700)
-  assert(await evaluate(`Array.from(document.querySelectorAll('.ant-picker-dropdown')).some(e=>getComputedStyle(e).display!=='none' && e.getBoundingClientRect().height>0)`), 'Date popup must stay visible')
+  const calendars = await evaluate(`Array.from(document.querySelectorAll('.ant-picker-dropdown')).map(e=>{const r=e.getBoundingClientRect();return {rect:r.toJSON(),visible:r.height>0 && e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}})` )
+  console.log('Date popups:', JSON.stringify(calendars))
+  assert(calendars.some(calendar => calendar.visible), 'Date popup must stay visible and accept pointer input')
   console.log('Native Windows WebView2 checks passed: filter, modal single/multiple selects, option selection, date popup.')
 } catch (error) {
   console.error('Debugger state:', JSON.stringify({ port, debuggerState }))
