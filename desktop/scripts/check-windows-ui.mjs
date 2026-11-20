@@ -50,7 +50,7 @@ async function evaluate(expression) {
   return response.result?.value
 }
 async function click(expression) {
-  const point = await evaluate(`(() => {const element = (${expression}); if (!element) throw Error('Missing click target'); element.scrollIntoView({block:'center',behavior:'instant'}); const r=element.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2};})()`)
+  const point = await evaluate(`(async () => {const element = (${expression}); if (!element) throw Error('Missing click target'); const before=element.getBoundingClientRect(); if(before.top<0 || before.bottom>innerHeight) element.scrollIntoView({block:'center',behavior:'instant'}); await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))); const r=element.getBoundingClientRect(); const x=r.x+r.width/2,y=r.y+r.height/2; const hit=document.elementFromPoint(x,y); if(!hit || !element.contains(hit)) throw Error('Click misses target: '+JSON.stringify({target:element.outerHTML,rect:r.toJSON(),hit:hit?.outerHTML})); return {x,y};})()`)
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point })
   await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point })
   await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point })

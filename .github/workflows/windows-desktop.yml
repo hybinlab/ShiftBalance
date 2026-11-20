@@ -5,6 +5,10 @@ on:
     paths: ['desktop/**', 'backend/**', 'frontend/**', '.github/workflows/windows-desktop.yml']
   workflow_dispatch:
     inputs:
+      installer_run_id:
+        description: Re-test an existing installer artifact without rebuilding (leave empty for a full build)
+        type: string
+        required: false
       postgres_url:
         description: Official EDB Windows x64 PostgreSQL binary ZIP URL (use the same major version for updates)
         type: string
@@ -15,6 +19,7 @@ on:
         required: false
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: desktop-${{ github.ref }}
   cancel-in-progress: true
@@ -28,18 +33,22 @@ jobs:
         with:
           node-version: '24'
       - uses: actions/setup-java@v4
+        if: ${{ !inputs.installer_run_id }}
         with:
           distribution: temurin
           java-version: '25'
           cache: maven
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !inputs.installer_run_id }}
         with:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
+        if: ${{ !inputs.installer_run_id }}
         with:
           workspaces: desktop/src-tauri -> target
           cache-on-failure: true
       - name: Prepare runtime and verify Windows database / solver
+        if: ${{ !inputs.installer_run_id }}
         shell: pwsh
         env:
           POSTGRES_URL: ${{ inputs.postgres_url }}
@@ -56,6 +65,7 @@ jobs:
           Invoke-WebRequest $uri -OutFile desktop/build/postgresql.zip
           ./desktop/build-windows.ps1 -PostgresZip desktop/build/postgresql.zip -PostgresSha256 $checksum -PrepareOnly
       - name: Build Tauri Windows installer
+        if: ${{ !inputs.installer_run_id }}
         shell: pwsh
         working-directory: desktop
         run: |
@@ -63,10 +73,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop npm install failed.' }
           npm run build:windows
           if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.installer_run_id }}
+        with:
+          name: ShiftBalance-Windows-x64
+          run-id: ${{ inputs.installer_run_id }}
+          github-token: ${{ github.token }}
+          path: desktop/build/installer
       - name: Install bundle and offline WebView2 runtime
         shell: pwsh
+        env:
+          INSTALLER_RUN_ID: ${{ inputs.installer_run_id }}
         run: |
-          $installer = Get-ChildItem desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe | Select-Object -First 1
+          $bundle = if ($env:INSTALLER_RUN_ID) { 'desktop/build/installer' } else { 'desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' }
+          $installer = Get-ChildItem "$bundle/*.exe" | Select-Object -First 1
           $destination = Join-Path $env:RUNNER_TEMP 'ShiftBalance-ui-test'
           $result = Start-Process $installer.FullName -ArgumentList '/S', "/D=$destination" -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Desktop installation failed: $($result.ExitCode)" }
@@ -76,6 +96,7 @@ jobs:
         working-directory: desktop
         run: node scripts/check-windows-ui.mjs
       - name: Upload installer
+        if: ${{ !inputs.installer_run_id }}
         uses: actions/upload-artifact@v4
         with:
           name: ShiftBalance-Windows-x64
