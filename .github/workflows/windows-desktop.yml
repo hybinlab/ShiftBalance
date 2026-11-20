@@ -21,7 +21,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: desktop-${{ github.ref }}-${{ inputs.installer_run_id || 'build' }}
   cancel-in-progress: true
 jobs:
   build:

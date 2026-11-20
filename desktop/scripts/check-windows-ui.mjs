@@ -61,7 +61,6 @@ async function openSelect(expression, label) {
   await delay(700) // Must remain open after focus and deferred outside-click handlers run.
   const state = await evaluate(`(() => {const e=(${expression}); const input=e.querySelector('[role=combobox]'); return {expanded:input?.getAttribute('aria-expanded'),options:Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')).map(e=>{const r=e.getBoundingClientRect();return {text:e.textContent,height:r.height,visible:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}}),focus:document.activeElement?.outerHTML,events:window.__popupEvents};})()`)
   console.log(`${label}: ${JSON.stringify(state)}`)
-  console.log('Popup layout:', JSON.stringify(await evaluate(`(() => {const popup=document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)');if(!popup)return null;let f=popup[Object.keys(popup).find(k=>k.startsWith('__reactFiber'))];const props=[];for(;f;f=f.return){const p=f.memoizedProps;if(p && ('ready' in p || 'target' in p || 'popupEle' in p))props.push({keys:Object.keys(p),ready:p.ready,open:p.open,target:p.target?.outerHTML,rect:p.target?.getBoundingClientRect?.().toJSON(),offsetX:p.offsetX,offsetY:p.offsetY,align:p.align});}const css=getComputedStyle(popup);return {html:popup.outerHTML.slice(0,1500),rect:popup.getBoundingClientRect().toJSON(),css:{width:css.width,height:css.height,display:css.display,position:css.position,transform:css.transform,visibility:css.visibility},props,focus:document.hasFocus(),visibility:document.visibilityState,userAgent:navigator.userAgent};})()`)))
   assert.equal(state.expanded, 'true', `${label} closed immediately`)
   assert(state.options.some(option => option.height > 0 && option.visible), `${label} has no visible options`)
 }
@@ -85,6 +84,8 @@ try {
   await cdp('Runtime.enable')
   await cdp('Page.enable')
   await cdp('Log.enable')
+  // RDP commonly requests reduced motion; popup alignment must still use instantaneous layout changes.
+  await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
   await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `window.__popupEvents=[];for(const type of ['pointerdown','mousedown','mouseup','click','focusin','focusout','blur'])window.addEventListener(type,e=>{window.__popupEvents.push({type,time:performance.now(),target:e.target?.tagName,classes:e.target?.className,active:document.activeElement?.tagName,related:e.relatedTarget?.tagName});window.__popupEvents=window.__popupEvents.slice(-35)},true);` })
   await until(() => evaluate('!!window.__TAURI__?.core'), 'bundled setup page')
   await evaluate(`window.__TAURI__.core.invoke('start_services',${JSON.stringify({ root, username: 'admin', password: 'native-ui-check-password' })})`)
@@ -119,7 +120,7 @@ try {
   console.log('Native Windows WebView2 checks passed: filter, modal single/multiple selects, option selection, date popup.')
 } catch (error) {
   console.error('Debugger state:', JSON.stringify({ port, debuggerState }))
-  spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'shiftbalance|msedgewebview2' } | Select-Object Name,ProcessId,ParentProcessId,CommandLine | Format-List"], { stdio: 'inherit' })
+  if (!socket) spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'shiftbalance|msedgewebview2' } | Select-Object Name,ProcessId,ParentProcessId,CommandLine | Format-List"], { stdio: 'inherit' })
   if (socket?.readyState === WebSocket.OPEN) {
     try {
       const screenshot = await cdp('Page.captureScreenshot', { format: 'png' })
