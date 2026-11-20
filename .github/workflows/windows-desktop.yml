@@ -63,6 +63,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop npm install failed.' }
           npm run build:windows
           if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
+      - name: Install bundle and offline WebView2 runtime
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe | Select-Object -First 1
+          $destination = Join-Path $env:RUNNER_TEMP 'ShiftBalance-ui-test'
+          $result = Start-Process $installer.FullName -ArgumentList '/S', "/D=$destination" -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Desktop installation failed: $($result.ExitCode)" }
+          "SHIFTBALANCE_TEST_EXE=$destination/shiftbalance-desktop.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Check native Windows dropdowns
         shell: pwsh
         working-directory: desktop

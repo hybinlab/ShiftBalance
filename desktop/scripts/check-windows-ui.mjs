@@ -12,8 +12,8 @@ const listener = createServer()
 await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve))
 const port = listener.address().port
 await new Promise(resolve => listener.close(resolve))
-const app = spawn(path.resolve('src-tauri/target/x86_64-pc-windows-msvc/release/shiftbalance-desktop.exe'), [], {
-  env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` }, stdio: 'ignore',
+const app = spawn(process.env.SHIFTBALANCE_TEST_EXE || path.resolve('src-tauri/target/x86_64-pc-windows-msvc/release/shiftbalance-desktop.exe'), [], {
+  env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` }, stdio: 'inherit',
 })
 const exited = new Promise(resolve => app.once('exit', resolve))
 let socket
@@ -24,6 +24,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 async function until(check, label, timeout = 90000) {
   const end = Date.now() + timeout
   while (Date.now() < end) {
+    if (app.exitCode !== null) throw new Error(`Desktop exited before ${label}: ${app.exitCode}`)
     try { const value = await check(); if (value) return value } catch { /* navigation replaces the execution context */ }
     await delay(200)
   }
@@ -118,6 +119,9 @@ try {
   socket?.close()
   if (app.exitCode === null) {
     spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${app.pid}).CloseMainWindow() | Out-Null`])
-    await Promise.race([exited, delay(95000).then(() => { if (app.exitCode === null) app.kill() })])
+    await new Promise(resolve => {
+      const timer = setTimeout(() => { if (app.exitCode === null) app.kill(); resolve() }, 95000)
+      exited.then(() => { clearTimeout(timer); resolve() })
+    })
   }
 }
