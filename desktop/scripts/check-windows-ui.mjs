@@ -97,17 +97,17 @@ try {
   const filter = `document.querySelector('.management-toolbar .ant-select:not(.ant-select-disabled)')`
   await until(() => evaluate(`!!(${filter}) && document.querySelectorAll('.ant-spin-spinning').length===0`), 'people filters')
   await openSelect(filter, 'People group filter')
-  await click(`Array.from(document.querySelectorAll('.ant-select-item-option')).find(e=>e.textContent.includes('A组'))`)
+  await click(`Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')).find(e=>e.textContent.includes('A组'))`)
   await until(() => evaluate(`(${filter}).textContent.includes('A组')`), 'selected group')
   await click(`Array.from(document.querySelectorAll('button')).find(e=>e.textContent.includes('新增人员'))`)
-  await until(() => evaluate(`!!document.querySelector('.ant-modal .ant-select')`), 'person modal')
+  await until(() => evaluate(`(() => {const e=document.querySelector('.ant-modal');return e && e.getBoundingClientRect().height>0 && getComputedStyle(e).transform==='none' && !e.getAnimations().some(a=>a.playState==='running')})()`), 'person modal entrance')
   const group = `document.querySelector('.ant-modal .ant-select')`
   await openSelect(group, 'Person modal group')
-  await click(`Array.from(document.querySelectorAll('.ant-select-item-option')).find(e=>e.textContent.includes('B组'))`)
+  await click(`Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')).find(e=>e.textContent.includes('B组'))`)
   await until(() => evaluate(`(${group}).textContent.includes('B组')`), 'modal selected group')
   const qualifications = `document.querySelectorAll('.ant-modal .ant-select')[1]`
   await openSelect(qualifications, 'Person modal qualifications')
-  await click(`Array.from(document.querySelectorAll('.ant-select-item-option')).find(e=>e.textContent.includes('防爆'))`)
+  await click(`Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')).find(e=>e.textContent.includes('防爆'))`)
   await until(() => evaluate(`(${qualifications}).textContent.includes('防爆')`), 'selected qualification')
   await click(`document.querySelector('.ant-modal-close')`)
   await click(nav('排班管理'))
