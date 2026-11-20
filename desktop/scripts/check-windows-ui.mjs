@@ -12,11 +12,17 @@ const listener = createServer()
 await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve))
 const port = listener.address().port
 await new Promise(resolve => listener.close(resolve))
+// WebView2 150+ ignores environment overrides in an elevated CI host; use its machine policy.
+const debugPolicy = 'HKLM\\Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments'
+if (process.env.GITHUB_ACTIONS === 'true') {
+  assert.equal(spawnSync('reg.exe', ['add', debugPolicy, '/v', 'shiftbalance-desktop.exe', '/t', 'REG_SZ', '/d', `--remote-debugging-port=${port}`, '/f'], { stdio: 'inherit' }).status, 0)
+}
 const app = spawn(process.env.SHIFTBALANCE_TEST_EXE || path.resolve('src-tauri/target/x86_64-pc-windows-msvc/release/shiftbalance-desktop.exe'), [], {
   env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` }, stdio: 'inherit',
 })
 const exited = new Promise(resolve => app.once('exit', resolve))
 let socket
+let debuggerState
 let requestId = 0
 const pending = new Map()
 const errors = []
@@ -44,7 +50,7 @@ async function evaluate(expression) {
   return response.result?.value
 }
 async function click(expression) {
-  const point = await evaluate(`(() => {const element = (${expression}); if (!element) throw Error('Missing click target'); element.scrollIntoView({block:'center'}); const r=element.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2};})()`)
+  const point = await evaluate(`(() => {const element = (${expression}); if (!element) throw Error('Missing click target'); element.scrollIntoView({block:'center',behavior:'instant'}); const r=element.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2};})()`)
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point })
   await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point })
   await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point })
@@ -60,8 +66,11 @@ async function openSelect(expression, label) {
 }
 try {
   const target = await until(async () => {
-    const response = await fetch(`http://127.0.0.1:${port}/json/list`)
-    return (await response.json()).find(target => target.type === 'page' && target.webSocketDebuggerUrl)
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2000) })
+      debuggerState = await response.json()
+      return debuggerState.find(target => target.webSocketDebuggerUrl)
+    } catch (error) { debuggerState = String(error); return false }
   }, 'WebView2 debugger')
   socket = new WebSocket(target.webSocketDebuggerUrl)
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject })
@@ -106,6 +115,8 @@ try {
   assert(await evaluate(`Array.from(document.querySelectorAll('.ant-picker-dropdown')).some(e=>getComputedStyle(e).display!=='none' && e.getBoundingClientRect().height>0)`), 'Date popup must stay visible')
   console.log('Native Windows WebView2 checks passed: filter, modal single/multiple selects, option selection, date popup.')
 } catch (error) {
+  console.error('Debugger state:', JSON.stringify({ port, debuggerState }))
+  spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'shiftbalance|msedgewebview2' } | Select-Object Name,ProcessId,ParentProcessId,CommandLine | Format-List"], { stdio: 'inherit' })
   if (socket?.readyState === WebSocket.OPEN) {
     try {
       const screenshot = await cdp('Page.captureScreenshot', { format: 'png' })
@@ -124,4 +135,5 @@ try {
       exited.then(() => { clearTimeout(timer); resolve() })
     })
   }
+  if (process.env.GITHUB_ACTIONS === 'true') spawnSync('reg.exe', ['delete', debugPolicy, '/v', 'shiftbalance-desktop.exe', '/f'], { stdio: 'inherit' })
 }
